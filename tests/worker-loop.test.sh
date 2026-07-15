@@ -10,6 +10,7 @@ WORKER_SCRIPT="${ROOT_DIR}/worker/worker-loop.sh"
 ENTRYPOINT_SCRIPT="${ROOT_DIR}/worker/entrypoint.sh"
 DEPLOY_SCRIPT="${ROOT_DIR}/deploy.sh"
 REMOTE_DEPLOY_SCRIPT="${ROOT_DIR}/remote-deploy.sh"
+TOKEN_BOUNDARY_SCRIPT="${ROOT_DIR}/tests/check-copilot-token-boundary.remote.sh"
 TMP_ROOT=$(mktemp -d)
 TEST_COUNT=0
 
@@ -588,6 +589,14 @@ dockerfile_source=$(cat "${ROOT_DIR}/worker/Dockerfile")
 remote_deploy_source=$(cat "$REMOTE_DEPLOY_SCRIPT")
 # shellcheck disable=SC2016 # Assertion intentionally matches literal shell source.
 assert_contains "$remote_deploy_source" 'sync_sources+=("$SCRIPT_DIR/$f")' "rsync joins checkout path and synced filename"
+token_boundary_source=$(cat "$TOKEN_BOUNDARY_SCRIPT")
+assert_not_contains "$token_boundary_source" '--data "{}"' "token boundary must not use malformed empty payloads"
+assert_contains "$token_boundary_source" 'assert_publisher_collision' "token boundary uses a write-capable positive control"
+# shellcheck disable=SC2016 # Assertions intentionally match literal shell source.
+assert_contains "$token_boundary_source" 'refs/remotes/origin/${default_branch}' "token boundary uses the existing default ref"
+# shellcheck disable=SC2016 # Assertions intentionally match literal jq source.
+assert_contains "$token_boundary_source" 'head: $branch, base: $branch' "token boundary uses an impossible same-branch PR"
+pass "token boundary uses non-mutating collision probes"
 assert_contains "$dockerfile_source" 'useradd -m -s /bin/bash -g squad squad-agent' "worker image creates coding user"
 assert_contains "$dockerfile_source" 'credential-guard-builder' "worker image builds the non-dumpable credential launcher"
 assert_contains "$dockerfile_source" 'libcredential-guard.so' "worker image installs the post-exec non-dumpable guard"
