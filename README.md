@@ -1,5 +1,5 @@
 <div align="center">
-  <img src="docs/assets/hangar-mark.svg" width="100" height="100" alt="Hangar mark — aviation-terminal hybrid" />
+  <img src="docs/assets/hangar-mark.svg" width="120" height="120" alt="Hangar mark — a friendly copilot robot ready to launch" />
   <h1>Hangar</h1>
   <p><strong>Where your copilots live, get fueled up, and launch.</strong></p>
   <p><em>The self-hosted flight deck for coding agents.</em></p>
@@ -83,8 +83,8 @@ The operational layer that keeps quality high and blast radius small:
 > `npx hangar`; that package name belongs to an unrelated project.
 
 ```bash
-git clone https://github.com/<your-org>/hangar.git
-cd hangar
+git clone https://github.com/timoknapp/Hangar.git
+cd Hangar
 
 cp .env.workers.example  .env.workers
 cp repos.example.json    repos.json
@@ -190,7 +190,7 @@ on loopback, and do not use it as a sandbox for untrusted repositories.
 ## 🗺️ Architecture
 
 ```mermaid
-graph TD
+flowchart TD
     subgraph "Your hardware — Hangar host"
         D["deploy.sh"] -->|"generates"| C["docker-compose.workers.yml"]
         C -->|"starts"| W1["squad-worker-1"]
@@ -227,29 +227,265 @@ graph TD
 ```mermaid
 sequenceDiagram
     participant Board  as "Issue board"
-    participant Loop   as "Worker loop"
-    participant Impl   as "Copilot session\n(squad-agent)"
-    participant Critic as "Critic session\n(optional)"
-    participant Verify as "Verify hook\n(optional)"
+    participant Worker as "Worker process"
+    participant Impl   as "Copilot session (squad-agent)"
+    participant Critic as "Independent critic (optional)"
+    participant Verify as "Verify hook (optional)"
     participant GH     as "GitHub"
 
-    Loop->>Board: poll for unclaimed tasks
-    Board-->>Loop: issue found
-    Loop->>Board: atomically create claim ref, then add squad:processing
-    Loop->>Impl: run implementation session (local workspace only)
-    Impl-->>Loop: local commits / residual edits
+    Worker->>Board: poll for unclaimed tasks
+    Board-->>Worker: issue found
+    Worker->>Board: atomically create claim ref, then add squad:processing
+    Worker->>Impl: run implementation session (local workspace only)
+    Impl-->>Worker: local commits / residual edits
     opt verify enabled
-        Loop->>Verify: run test suite or custom script
-      Verify-->>Loop: pass / fail → bounded correction
+        Worker->>Verify: run test suite or custom script
+        Verify-->>Worker: pass / fail to bounded correction
     end
     opt critic enabled after verification
-      Loop->>Critic: fresh read-only review of attested diff input
-      Critic-->>Loop: APPROVE / REQUEST_CHANGES / unavailable
-      Note over Loop,Critic: Critic-driven fixes are fully re-verified
+        Worker->>Critic: fresh read-only review of attested diff input
+        Critic-->>Worker: APPROVE / REQUEST_CHANGES / unavailable
+        Note over Worker,Critic: Critic-driven fixes are fully re-verified
     end
-    Loop->>GH: publisher pushes branch and creates ready or draft PR
+    Worker->>GH: publisher pushes branch and creates ready or draft PR
     Note over GH: Human reviews and merges
 ```
+
+## 🛫 How it operates — every scenario
+
+The summary above is the straight-line journey. The diagrams below cover the complete worker
+cycle and each operational branch. They are collapsed by default to keep the README scannable.
+
+### Master cycle
+
+```mermaid
+flowchart TD
+    Wake([Worker wakes for a poll cycle]) --> Revision{Revision issue waiting?}
+    Revision -->|yes| ClaimRevision[Atomically claim issue ref<br/>checkout existing PR branch]
+    Revision -->|no| NewIssue{Queued squad issue waiting?}
+
+    NewIssue -->|yes| Budget{Daily new-PR budget available?}
+    NewIssue -->|no| Autonomous{Autonomous mode enabled?}
+    Budget -->|no| Idle[Idle; revisions remain eligible]
+    Budget -->|yes| Reserve[Atomically reserve repository budget slot]
+    Reserve --> ClaimNew[Atomically claim issue ref<br/>create squad issue branch]
+
+    Autonomous -->|no| Idle
+    Autonomous -->|yes| AutoCapacity{Budget and auto-issue capacity available?}
+    AutoCapacity -->|no| Idle
+    AutoCapacity -->|yes| Generate[Generate one goal-aligned squad issue]
+    Generate --> Wake
+
+    ClaimRevision --> Implement[Run Copilot or Squad implementation]
+    ClaimNew --> Implement
+    Implement --> VerifyState{Verification state?}
+    VerifyState -->|disabled| CriticState{Independent critic enabled?}
+    VerifyState -->|unavailable| Draft[Publish a flagged draft PR]
+    VerifyState -->|configured| RunVerify[Run build and tests]
+    RunVerify -->|pass| CriticState
+    RunVerify -->|fail| VerifyRetries{Correction retries left?}
+    VerifyRetries -->|yes| VerifyFix[Correct from verification log]
+    VerifyFix --> RunVerify
+    VerifyRetries -->|no| Draft
+
+    CriticState -->|no| Ready[Publish a ready PR]
+    CriticState -->|yes| Review[Fresh attested read-only review]
+    Review -->|APPROVE| Ready
+    Review -->|REQUEST_CHANGES| CriticRetries{Correction retries left?}
+    CriticRetries -->|yes| CriticFix[Apply critic feedback]
+    CriticFix --> RunVerify
+    CriticRetries -->|no| Draft
+    Review -->|unavailable or malformed| InfraRetries{Critic retries left?}
+    InfraRetries -->|yes| Review
+    InfraRetries -->|no| Draft
+
+    Ready --> Finish[Add squad:done<br/>release atomic claim]
+    Draft --> Finish
+    Finish --> Idle
+    Idle --> Wake
+```
+
+<details>
+<summary><b>Scenario A — Happy path: queued issue to ready PR</b></summary>
+
+```mermaid
+sequenceDiagram
+    participant Worker as "Hangar worker"
+    participant GitHub as "GitHub"
+    participant Impl as "Squad implementer"
+    participant Verify as "Verify gate"
+    participant Critic as "Independent critic"
+
+    Worker->>GitHub: Poll and find issue 42 with squad label
+    Worker->>GitHub: Create atomic claim ref
+    Worker->>GitHub: Add squad:processing
+    Worker->>Impl: Implement issue 42 locally
+    Impl-->>Worker: Local commits and residual edits
+    Worker->>Verify: Run build and tests
+    Verify-->>Worker: PASS
+    Worker->>Critic: Review attested diff against rubric
+    Critic-->>Worker: APPROVE
+    Worker->>GitHub: Push branch and open ready PR
+    Worker->>GitHub: Add squad:done and release claim ref
+    Note over GitHub: A human reviews and merges
+```
+
+</details>
+
+<details>
+<summary><b>Scenario B — Empty board: generate the next task</b></summary>
+
+```mermaid
+sequenceDiagram
+    participant Worker as "Hangar worker"
+    participant GitHub as "GitHub"
+    participant Planner as "Read-only planner"
+
+    Worker->>GitHub: Poll revision and squad queues
+    GitHub-->>Worker: No eligible issue
+    Note over Worker: Autonomous mode is enabled<br/>Budget and auto-issue capacity remain
+    Worker->>Planner: Read goal source and repository context
+    Planner-->>Worker: Return one highest-value scoped task
+    Worker->>GitHub: File issue with squad and loop:auto
+    Note over Worker: A later cycle handles it through Scenario A
+```
+
+</details>
+
+<details>
+<summary><b>Scenario C — Verification fails: bounded self-correction</b></summary>
+
+```mermaid
+sequenceDiagram
+    participant Worker as "Hangar worker"
+    participant Impl as "Squad implementer"
+    participant Verify as "Verify gate"
+
+    Worker->>Impl: Implement requested change
+    Impl-->>Worker: Local commits
+    Worker->>Verify: Run complete build and test command
+    Verify-->>Worker: FAIL with bounded log tail
+    Worker->>Impl: Correct from verification feedback
+    Impl-->>Worker: Fix commits
+    Worker->>Verify: Re-run complete build and test command
+    Verify-->>Worker: PASS
+    Note over Worker: Continue to independent critic before publication
+```
+
+</details>
+
+<details>
+<summary><b>Scenario D — Critic requests changes: revise, re-verify, re-review</b></summary>
+
+```mermaid
+sequenceDiagram
+    participant Worker as "Hangar worker"
+    participant Impl as "Squad implementer"
+    participant Verify as "Verify gate"
+    participant Critic as "Independent critic"
+
+    Worker->>Critic: Review attested diff against rubric
+    Critic-->>Worker: REQUEST_CHANGES with reasons
+    Worker->>Impl: Apply critic feedback
+    Impl-->>Worker: Revised commits
+    Worker->>Verify: Re-run complete build and tests
+    Verify-->>Worker: PASS
+    Worker->>Critic: Review the new attested diff
+    Critic-->>Worker: APPROVE
+    Note over Worker: Only the re-verified revision can become a ready PR
+```
+
+</details>
+
+<details>
+<summary><b>Scenario E — Verification unavailable: fail safely to draft</b></summary>
+
+```mermaid
+sequenceDiagram
+    participant Worker as "Hangar worker"
+    participant Impl as "Squad implementer"
+    participant Verify as "Verify discovery"
+    participant GitHub as "GitHub"
+
+    Worker->>Impl: Implement requested change
+    Impl-->>Worker: Local commits
+    Worker->>Verify: Resolve automatic build and test command
+    Verify-->>Worker: No supported command detected
+    Worker->>GitHub: Push branch and open draft PR
+    Worker->>GitHub: Add verification-unavailable warning to PR body
+    Note over GitHub: Human review is required before merge
+```
+
+</details>
+
+<details>
+<summary><b>Scenario F — Daily budget exhausted: idle without blocking revisions</b></summary>
+
+```mermaid
+sequenceDiagram
+    participant Worker as "Hangar worker"
+    participant GitHub as "GitHub"
+
+    Worker->>GitHub: Check revision queue first
+    GitHub-->>Worker: No revision waiting
+    Worker->>GitHub: Read repository PR count and budget refs
+    GitHub-->>Worker: Daily new-PR cap reached
+    Worker-->>Worker: Idle until the next poll interval
+    Note over Worker,GitHub: Revision issues bypass the new-PR budget cap
+```
+
+</details>
+
+<details>
+<summary><b>Scenario G — Human requests a revision on an existing PR</b></summary>
+
+```mermaid
+sequenceDiagram
+    participant Human as "Human reviewer"
+    participant GitHub as "GitHub"
+    participant Worker as "Hangar worker"
+    participant Impl as "Squad implementer"
+    participant Gates as "Verify and critic gates"
+
+    Human->>GitHub: Comment on issue and add squad:revision
+    Worker->>GitHub: Atomically claim the issue
+    Worker->>GitHub: Fetch existing PR branch and failed checks
+    Worker->>Impl: Apply only the requested revision
+    Impl-->>Worker: Revision commits
+    Worker->>Gates: Verify and independently review revision
+    alt Gates pass
+      Gates-->>Worker: Ready
+      Worker->>GitHub: Force-with-lease update of the same PR branch
+    else Gates remain unresolved
+      Gates-->>Worker: Draft required
+      Worker->>GitHub: Convert existing PR to draft before push
+      Worker->>GitHub: Force-with-lease update with gate warning
+    end
+    Worker->>GitHub: Remove squad:revision and release claim ref
+```
+
+</details>
+
+<details>
+<summary><b>Scenario H — Critic unavailable: retry infrastructure, then draft</b></summary>
+
+```mermaid
+sequenceDiagram
+    participant Worker as "Hangar worker"
+    participant Critic as "Independent critic"
+    participant GitHub as "GitHub"
+
+    Worker->>Critic: Submit read-only review file with nonce
+    Critic-->>Worker: Timeout, malformed output, or missing attestation
+    loop Bounded infrastructure retries
+      Worker->>Critic: Retry unchanged diff without modifying code
+      Critic-->>Worker: No valid attested verdict
+    end
+    Worker->>GitHub: Open draft PR with critic-unavailable warning
+    Note over GitHub: No missing verdict is inferred as approval
+```
+
+</details>
 
 ---
 
@@ -336,7 +572,6 @@ threat model.
 | [docs/INSTALL.md](docs/INSTALL.md) | Full installation guide — prerequisites, GitHub App setup, first worker |
 | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | System design, trust boundaries, threat model, component map |
 | [docs/OPERATIONS.md](docs/OPERATIONS.md) | Day-to-day ops: logs, scaling, credential rotation, debugging |
-| [docs/MIGRATING-FROM-COPILOT-WORKSTATION.md](docs/MIGRATING-FROM-COPILOT-WORKSTATION.md) | Upgrade path from the older `copilot-workstation` layout |
 
 ---
 

@@ -55,6 +55,7 @@ for f in \
   tests/mcp-capability-smoke.remote.sh \
   tests/prepare-revision-retry.remote.sh \
   tests/pr-guard.test.sh \
+  tests/readme-content.test.sh \
   tests/public-release-check.sh \
   tests/public-release-check.test.sh \
   tests/remediate-tokenized-remotes.remote.sh \
@@ -75,6 +76,7 @@ bash -n "${shell_scripts[@]}"
 shellcheck "${shell_scripts[@]}"
 
 # --- Local test execution ---
+bash tests/readme-content.test.sh
 bash tests/public-release-check.test.sh
 bash tests/public-release-check.sh
 bash tests/config-equivalence.sh

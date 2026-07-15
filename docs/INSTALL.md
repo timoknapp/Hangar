@@ -94,8 +94,8 @@ The PAT owner must have an active GitHub Copilot plan that permits Copilot CLI u
 ## 4. Clone and configure
 
 ```bash
-git clone https://github.com/<your-org>/hangar.git
-cd hangar
+git clone https://github.com/timoknapp/Hangar.git
+cd Hangar
 ```
 
 ### Environment file

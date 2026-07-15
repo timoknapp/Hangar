@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# shellcheck disable=SC2034,SC2153,SC2154
+# shellcheck disable=SC2034,SC2153,SC2154,SC2317
 # The sourced worker functions consume globals and printf -v assigns result
 # variables dynamically, which static analysis cannot follow in this harness.
 set -euo pipefail

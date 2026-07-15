@@ -1,62 +1,80 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 120 120" width="120" height="120" role="img" aria-label="Hangar mark">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 160 160" width="160" height="160" role="img" aria-labelledby="title description">
+  <title id="title">Hangar AI coding-assistant mark</title>
+  <desc id="description">A friendly dual-lens copilot robot waiting inside an illuminated aircraft hangar, with a runway leading outward.</desc>
+
   <defs>
-    <linearGradient id="sky" x1="0%" y1="0%" x2="0%" y2="100%">
-      <stop offset="0%" style="stop-color:#0d1117;stop-opacity:1" />
-      <stop offset="100%" style="stop-color:#161b22;stop-opacity:1" />
+    <linearGradient id="backdrop" x1="18" y1="10" x2="142" y2="150" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#0d1117" />
+      <stop offset="1" stop-color="#161b22" />
     </linearGradient>
-    <linearGradient id="wing-grad" x1="0%" y1="0%" x2="100%" y2="100%">
-      <stop offset="0%" style="stop-color:#58a6ff;stop-opacity:1" />
-      <stop offset="100%" style="stop-color:#1f6feb;stop-opacity:1" />
+    <linearGradient id="hangarLight" x1="31" y1="38" x2="129" y2="132" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#58a6ff" />
+      <stop offset="0.52" stop-color="#8b5cf6" />
+      <stop offset="1" stop-color="#d2a8ff" />
     </linearGradient>
-    <linearGradient id="fuselage-grad" x1="0%" y1="0%" x2="100%" y2="0%">
-      <stop offset="0%" style="stop-color:#e6edf3;stop-opacity:1" />
-      <stop offset="100%" style="stop-color:#adbac7;stop-opacity:1" />
+    <linearGradient id="helmet" x1="48" y1="49" x2="111" y2="113" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#f0f6fc" />
+      <stop offset="1" stop-color="#8c959f" />
     </linearGradient>
-    <filter id="glow">
-      <feGaussianBlur stdDeviation="1.5" result="coloredBlur"/>
-      <feMerge><feMergeNode in="coloredBlur"/><feMergeNode in="SourceGraphic"/></feMerge>
+    <radialGradient id="leftLens" cx="0" cy="0" r="1" gradientTransform="translate(63 76) rotate(52) scale(24)">
+      <stop offset="0" stop-color="#f0f6fc" />
+      <stop offset="0.28" stop-color="#79c0ff" />
+      <stop offset="1" stop-color="#1f6feb" />
+    </radialGradient>
+    <radialGradient id="rightLens" cx="0" cy="0" r="1" gradientTransform="translate(97 76) rotate(52) scale(24)">
+      <stop offset="0" stop-color="#f0f6fc" />
+      <stop offset="0.28" stop-color="#d2a8ff" />
+      <stop offset="1" stop-color="#8957e5" />
+    </radialGradient>
+    <filter id="softGlow" x="-40%" y="-40%" width="180%" height="180%">
+      <feGaussianBlur stdDeviation="2.4" result="blur" />
+      <feMerge>
+        <feMergeNode in="blur" />
+        <feMergeNode in="SourceGraphic" />
+      </feMerge>
+    </filter>
+    <filter id="shadow" x="-30%" y="-30%" width="160%" height="170%">
+      <feDropShadow dx="0" dy="4" stdDeviation="4" flood-color="#010409" flood-opacity="0.65" />
     </filter>
   </defs>
 
-  <!-- Background circle -->
-  <circle cx="60" cy="60" r="58" fill="url(#sky)" stroke="#30363d" stroke-width="1.5"/>
+  <!-- Night-flight badge -->
+  <rect x="4" y="4" width="152" height="152" rx="40" fill="url(#backdrop)" stroke="#30363d" stroke-width="2" />
+  <path d="M25 124V73C25 45 49 23 80 23C111 23 135 45 135 73V124" fill="none" stroke="#30363d" stroke-width="8" stroke-linecap="round" />
+  <path d="M27 122V73C27 47 50 27 80 27C110 27 133 47 133 73V122" fill="none" stroke="url(#hangarLight)" stroke-width="2.5" stroke-linecap="round" filter="url(#softGlow)" />
+  <path d="M80 28V42M42 45L52 55M118 45L108 55" stroke="#58a6ff" stroke-width="2" stroke-linecap="round" opacity="0.48" />
 
-  <!-- Hangar arch -->
-  <path d="M18 82 Q18 44 60 40 Q102 44 102 82" fill="none" stroke="#30363d" stroke-width="2.5"/>
-  <line x1="18" y1="82" x2="18" y2="92" stroke="#30363d" stroke-width="2.5"/>
-  <line x1="102" y1="82" x2="102" y2="92" stroke="#30363d" stroke-width="2.5"/>
-  <line x1="15" y1="92" x2="105" y2="92" stroke="#30363d" stroke-width="2.5"/>
+  <!-- Launch lights -->
+  <circle cx="35" cy="118" r="2.5" fill="#58a6ff" filter="url(#softGlow)" />
+  <circle cx="125" cy="118" r="2.5" fill="#d2a8ff" filter="url(#softGlow)" />
+  <path d="M20 125H140" stroke="#484f58" stroke-width="2" stroke-linecap="round" />
 
-  <!-- Hangar door lines -->
-  <line x1="60" y1="40" x2="60" y2="92" stroke="#21262d" stroke-width="1.5" stroke-dasharray="3,3"/>
+  <!-- Original copilot robot / flight helmet -->
+  <g filter="url(#shadow)">
+    <path d="M44 64C44 48 57 38 80 38C103 38 116 48 116 64V91C116 108 102 119 80 119C58 119 44 108 44 91V64Z" fill="url(#helmet)" stroke="#f0f6fc" stroke-width="1.5" />
+    <path d="M37 70C31 72 29 78 29 85C29 92 32 98 38 99L45 96V68L37 70Z" fill="#6e7681" stroke="#adbac7" stroke-width="1.5" />
+    <path d="M123 70C129 72 131 78 131 85C131 92 128 98 122 99L115 96V68L123 70Z" fill="#6e7681" stroke="#adbac7" stroke-width="1.5" />
+    <path d="M47 68C47 57 57 50 80 50C103 50 113 57 113 68V90C113 103 102 111 80 111C58 111 47 103 47 90V68Z" fill="#0d1117" stroke="#30363d" stroke-width="2" />
 
-  <!-- Runway / ground line -->
-  <line x1="15" y1="92" x2="105" y2="92" stroke="#3d444d" stroke-width="1"/>
-  <!-- Runway centerline dashes -->
-  <line x1="33" y1="96" x2="43" y2="96" stroke="#3d444d" stroke-width="1.5" stroke-linecap="round"/>
-  <line x1="55" y1="96" x2="65" y2="96" stroke="#3d444d" stroke-width="1.5" stroke-linecap="round"/>
-  <line x1="77" y1="96" x2="87" y2="96" stroke="#3d444d" stroke-width="1.5" stroke-linecap="round"/>
+    <!-- Signature dual-lens copilot visor -->
+    <circle cx="63" cy="77" r="17" fill="url(#leftLens)" stroke="#79c0ff" stroke-width="2.5" filter="url(#softGlow)" />
+    <circle cx="97" cy="77" r="17" fill="url(#rightLens)" stroke="#d2a8ff" stroke-width="2.5" filter="url(#softGlow)" />
+    <path d="M78 74C79 73 81 73 82 74" stroke="#adbac7" stroke-width="4" stroke-linecap="round" />
+    <circle cx="65" cy="79" r="5.5" fill="#0d1117" />
+    <circle cx="95" cy="79" r="5.5" fill="#0d1117" />
+    <circle cx="62.5" cy="76.5" r="2" fill="#f0f6fc" opacity="0.9" />
+    <circle cx="92.5" cy="76.5" r="2" fill="#f0f6fc" opacity="0.9" />
 
-  <!-- Plane — top-down silhouette, taxiing out -->
-  <!-- Fuselage -->
-  <ellipse cx="60" cy="70" rx="4.5" ry="13" fill="url(#fuselage-grad)" filter="url(#glow)"/>
-  <!-- Left wing -->
-  <path d="M55.5 67 L30 74 L32 76 L55.5 71" fill="url(#wing-grad)" opacity="0.92"/>
-  <!-- Right wing -->
-  <path d="M64.5 67 L90 74 L88 76 L64.5 71" fill="url(#wing-grad)" opacity="0.92"/>
-  <!-- Tail left -->
-  <path d="M57 81 L46 88 L47.5 89.5 L58 83.5" fill="url(#wing-grad)" opacity="0.7"/>
-  <!-- Tail right -->
-  <path d="M63 81 L74 88 L72.5 89.5 L62 83.5" fill="url(#wing-grad)" opacity="0.7"/>
-  <!-- Nose highlight -->
-  <ellipse cx="60" cy="58" rx="2" ry="2.5" fill="#e6edf3" opacity="0.7"/>
+    <!-- Terminal prompt smile -->
+    <path d="M65 98L70 102L65 106" fill="none" stroke="#79c0ff" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" />
+    <path d="M75 106H94" stroke="#d2a8ff" stroke-width="2.5" stroke-linecap="round" />
+  </g>
 
-  <!-- Terminal blink cursor — top left of badge, thematic touch -->
-  <rect x="22" y="22" width="6" height="1.5" rx="0.5" fill="#58a6ff" opacity="0.6"/>
-  <rect x="22" y="25" width="10" height="1.5" rx="0.5" fill="#3d444d" opacity="0.5"/>
-  <rect x="22" y="28" width="8" height="1.5" rx="0.5" fill="#3d444d" opacity="0.5"/>
-  <rect x="22" y="31" width="4" height="1.5" rx="0.5" fill="#58a6ff" opacity="0.8"/>
+  <!-- Runway emerging from the hangar -->
+  <path d="M65 124L52 153M95 124L108 153" stroke="#30363d" stroke-width="2" />
+  <path d="M80 126V133M80 139V146M80 151V154" stroke="#f0f6fc" stroke-width="2" stroke-linecap="round" opacity="0.72" />
 
-  <!-- Outer ring accent -->
-  <circle cx="60" cy="60" r="58" fill="none" stroke="#1f6feb" stroke-width="0.5" opacity="0.4"/>
+  <!-- AI launch spark -->
+  <path d="M126 27V35M122 31H130" stroke="#d2a8ff" stroke-width="2" stroke-linecap="round" filter="url(#softGlow)" />
+  <path d="M31 29V34M28.5 31.5H33.5" stroke="#58a6ff" stroke-width="1.5" stroke-linecap="round" opacity="0.9" />
 </svg>

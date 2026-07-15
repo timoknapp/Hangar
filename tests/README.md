@@ -11,6 +11,7 @@ Runs automatically on every pre-merge check. Validates:
 - `jq` validation of JSON fixtures
 - JavaScript/Python/C fixture syntax (C on Linux only)
 - Public-release content check (no private artifacts)
+- README source URL, diagram inventory, and Mermaid keyword regression
 - Generic config equivalence across shared-queue workers
 - PR fail-closed ordering assertions
 - Worker-loop unit/integration test suite
@@ -59,6 +60,7 @@ bash tests/final-gate.sh
 bash tests/worker-loop.test.sh
 bash tests/config-equivalence.sh
 bash tests/pr-guard.test.sh
+bash tests/readme-content.test.sh
 bash tests/public-release-check.sh
 
 # Remote proofs (from Docker host with fleet running)
