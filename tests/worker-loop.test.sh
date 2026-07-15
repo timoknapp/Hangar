@@ -11,6 +11,7 @@ ENTRYPOINT_SCRIPT="${ROOT_DIR}/worker/entrypoint.sh"
 DEPLOY_SCRIPT="${ROOT_DIR}/deploy.sh"
 REMOTE_DEPLOY_SCRIPT="${ROOT_DIR}/remote-deploy.sh"
 TOKEN_BOUNDARY_SCRIPT="${ROOT_DIR}/tests/check-copilot-token-boundary.remote.sh"
+SQUAD_CAPABILITY_SCRIPT="${ROOT_DIR}/tests/squad-capability-preflight.remote.sh"
 TMP_ROOT=$(mktemp -d)
 TEST_COUNT=0
 
@@ -597,6 +598,11 @@ assert_contains "$token_boundary_source" 'git/ref/heads/${default_branch}' "toke
 # shellcheck disable=SC2016 # Assertions intentionally match literal jq source.
 assert_contains "$token_boundary_source" 'head: $branch, base: $branch' "token boundary uses an impossible same-branch PR"
 pass "token boundary uses non-mutating collision probes"
+squad_capability_source=$(cat "$SQUAD_CAPABILITY_SCRIPT")
+assert_not_contains "$squad_capability_source" 'printenv WORKSPACE_DIR' "capability proof must not expect workspace in container env"
+assert_contains "$squad_capability_source" 'source /home/copilot/.workspace_env' "capability proof loads trusted runtime workspace config"
+assert_contains "$squad_capability_source" '/workspace/*' "capability proof confines its source checkout"
+pass "Squad capability proof resolves the protected workspace safely"
 assert_contains "$dockerfile_source" 'useradd -m -s /bin/bash -g squad squad-agent' "worker image creates coding user"
 assert_contains "$dockerfile_source" 'credential-guard-builder' "worker image builds the non-dumpable credential launcher"
 assert_contains "$dockerfile_source" 'libcredential-guard.so' "worker image installs the post-exec non-dumpable guard"

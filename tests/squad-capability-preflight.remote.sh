@@ -16,8 +16,20 @@ else
   container="squad-${first_squad_worker}"
 fi
 
-# Derive workspace from container env
-source_workspace=$(docker exec -u copilot "$container" printenv WORKSPACE_DIR 2>/dev/null || echo "/workspace/repo")
+# WORKSPACE_DIR is intentionally stored in the publisher-only runtime file, not
+# in Docker's inspectable container environment. Resolve it through the same
+# trusted source path used by worker-loop.sh and reject unexpected locations.
+source_workspace=$(docker exec -u copilot "$container" bash -c '
+  set -euo pipefail
+  source /home/copilot/.workspace_env
+  printf "%s\n" "$WORKSPACE_DIR"
+')
+case "$source_workspace" in
+  /workspace/*) ;;
+  *) echo "ERROR: worker workspace is outside /workspace" >&2; exit 1 ;;
+esac
+docker exec -u squad-agent "$container" test -d "$source_workspace/.git" \
+  || { echo "ERROR: worker repository checkout is unavailable" >&2; exit 1; }
 probe_dir="/tmp/squad-capability-$RANDOM-$$"
 output_file=$(mktemp)
 config_file=$(mktemp)
