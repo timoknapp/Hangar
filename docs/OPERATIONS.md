@@ -258,7 +258,8 @@ next container start.
 
 You can point multiple workers at the same repository. Workers coordinate through atomic Git
 refs (`squad-claims/issue-N`) and use labels only as visible workflow state. Repository-wide
-`squad-budget/<date>/slot-N` refs coordinate the daily new-PR budget.
+`squad-budget/<date>/slot-N` refs coordinate the daily autonomous `loop:auto` budget. Manual
+`squad` issues and all revisions bypass that budget and are prioritized over generated work.
 This is useful for parallelising work on a large backlog but requires careful rate-limit
 awareness (GitHub API quota is shared per installation).
 

@@ -29,11 +29,17 @@ for scenario in \
   'Scenario C — Verification fails' \
   'Scenario D — Critic requests changes' \
   'Scenario E — Verification unavailable' \
-  'Scenario F — Daily budget exhausted' \
+  'Scenario F — Autonomous budget exhausted' \
   'Scenario G — Human requests a revision' \
   'Scenario H — Critic unavailable'; do
   grep -Fq "$scenario" "$README" || fail "missing README diagram: $scenario"
 done
+
+# shellcheck disable=SC2016 # Backticks are intentional Markdown delimiters.
+grep -Fq 'Human-created `squad` issues do not' "$README" \
+  || fail "README must state that manual issues bypass maxPrsPerDay"
+grep -Fq 'manual issues and revisions bypass it' "$README" \
+  || fail "README control table must describe the autonomous-only budget"
 
 mermaid_count=$(awk '
   {

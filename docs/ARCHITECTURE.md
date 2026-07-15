@@ -227,8 +227,10 @@ Verify runs as `squad-agent` inside the workspace. A non-zero exit code triggers
 
 ### Budget and draft safety
 
-- `maxPrsPerDay` — enforced repository-wide through atomic `squad-budget/YYYY-MM-DD/slot-N`
-  Git refs, shared by sibling workers and durable across restarts; revisions bypass this new-PR cap
+- `maxPrsPerDay` — caps only autonomous `loop:auto` PR attempts. It is enforced repository-wide
+  through atomic `squad-budget/YYYY-MM-DD/slot-N` Git refs shared by sibling workers and durable
+  across restarts. Human-created `squad` issues and revisions bypass the cap. Manual issues are
+  selected ahead of generated work so an exhausted autonomous budget cannot hide them.
 - `maxOpenAutoIssues` — in `loop.autonomous` mode, limits concurrent self-generated issues so
   the board doesn't fill up with stale work
 

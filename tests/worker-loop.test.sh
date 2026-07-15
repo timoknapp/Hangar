@@ -191,6 +191,31 @@ pass "Squad implementer receives full local engineering capabilities"
 LOOP_IMPLEMENTER=plain
 configure_implementer_mode
 
+manual_issue='{"number":42,"title":"Manual","body":"","labels":[{"name":"squad"}]}'
+auto_issue='{"number":41,"title":"Generated","body":"","labels":[{"name":"squad"},{"name":"loop:auto"}]}'
+label_classifier_source=$(declare -f issue_has_label)
+assert_not_contains "$label_classifier_source" '--arg label ' "jq label classifier must avoid reserved keyword argument"
+assert_contains "$label_classifier_source" '--arg wanted_label ' "jq label classifier uses portable argument name"
+run_and_capture_rc label_rc is_autonomous_issue "$manual_issue"
+assert_eq "1" "$label_rc" "manual issue auto classification"
+run_and_capture_rc label_rc is_autonomous_issue "$auto_issue"
+assert_eq "0" "$label_rc" "generated issue auto classification"
+
+mixed_queue='[
+  {"number":41,"title":"Older generated","body":"","labels":[{"name":"squad"},{"name":"loop:auto"}]},
+  {"number":42,"title":"Newer manual","body":"","labels":[{"name":"squad"}]}
+]'
+selected_issue=$(select_next_unclaimed_issue "$mixed_queue")
+assert_eq "42" "$(printf '%s' "$selected_issue" | jq -r '.number')" "manual issue priority over loop:auto"
+
+manual_blocked_queue='[
+  {"number":41,"title":"Generated","body":"","labels":[{"name":"squad"},{"name":"loop:auto"}]},
+  {"number":42,"title":"Manual processing","body":"","labels":[{"name":"squad"},{"name":"squad:processing"}]}
+]'
+selected_issue=$(select_next_unclaimed_issue "$manual_blocked_queue")
+assert_eq "41" "$(printf '%s' "$selected_issue" | jq -r '.number')" "loop:auto fallback when no manual issue is eligible"
+pass "manual issues are classified and selected ahead of autonomous work"
+
 rubric=$(resolve_critic_rubric)
 assert_contains "$rubric" "REPO_RULE_SENTINEL" "repo-aware rubric includes repository instructions"
 pass "repo-aware rubric includes bounded repository context"
@@ -420,14 +445,10 @@ assert_not_contains "$runner_source" 'GH_TOKEN="$token"' "agent runner must not 
 pass "live residual coding processes stop the worker before publication"
 
 today=$(date -u +%Y-%m-%d)
-REMOTE_PR_COUNT=0
 BUDGET_LOCK="${TMP_ROOT}/budget-slot"
 CLAIM_LOCK="${TMP_ROOT}/issue-claim"
 GH_MODE="budget"
 PR_LOOKUP_MODE="empty"
-count_remote_worker_prs_today() {
-  printf '%s\n' "$REMOTE_PR_COUNT"
-}
 count_budget_reservations() {
   [[ -d "$BUDGET_LOCK" ]] && echo 1 || echo 0
 }
@@ -447,7 +468,11 @@ gh() {
       return 0
     fi
     if [[ " $* " == *" --method POST "* ]]; then
-      mkdir "$CLAIM_LOCK" 2>/dev/null
+      if [[ "$*" == *"refs/heads/squad-budget/"* ]]; then
+        mkdir "$BUDGET_LOCK" 2>/dev/null
+      else
+        mkdir "$CLAIM_LOCK" 2>/dev/null
+      fi
       return $?
     fi
     if [[ " $* " == *" --method DELETE "* ]]; then
@@ -457,6 +482,10 @@ gh() {
     if [[ "$*" == *"/git/ref/heads/main"* ]]; then
       echo "deadbeef"
       return 0
+    fi
+    if [[ "$*" == *"/git/ref/heads/squad-budget/"* ]]; then
+      [[ -d "$BUDGET_LOCK" ]]
+      return $?
     fi
     return 1
   fi
@@ -487,17 +516,17 @@ run_and_capture_rc budget_rc pr_budget_remaining
 assert_eq "1" "$budget_rc" "reservation survives process restart through GitHub state"
 pass "repository reservation enforces cap across workers and restarts"
 
-rm -rf "$BUDGET_LOCK"
-REMOTE_PR_COUNT=1
-run_and_capture_rc budget_rc pr_budget_remaining
-assert_eq "1" "$budget_rc" "existing repository worker PR budget"
-pass "existing same-day worker PR consumes unreserved legacy slot"
+budget_remaining_source=$(declare -f pr_budget_remaining)
+assert_not_contains "$budget_remaining_source" "gh pr list" "manual PR history must not consume autonomous budget"
+assert_not_contains "$budget_remaining_source" "count_remote_worker_prs_today" "budget must use autonomous reservation refs only"
+pass "manual PR history does not consume autonomous budget"
 
 GH_MODE="claim"
-rm -rf "$CLAIM_LOCK"
+rm -rf "$CLAIM_LOCK" "$BUDGET_LOCK"
 CURRENT_CLAIM_REF=""
 run_and_capture_rc claim_rc claim_issue 77
 assert_eq "0" "$claim_rc" "first atomic issue claim"
+[[ ! -d "$BUDGET_LOCK" ]] || fail "manual issue claim consumed an autonomous budget slot"
 first_claim_ref="$CURRENT_CLAIM_REF"
 CURRENT_CLAIM_REF=""
 run_and_capture_rc claim_rc claim_issue 77
@@ -505,8 +534,36 @@ assert_eq "1" "$claim_rc" "second atomic issue claim collision"
 CURRENT_CLAIM_REF="$first_claim_ref"
 release_issue_claim
 [[ ! -d "$CLAIM_LOCK" ]] || fail "atomic issue claim was not released"
+pass "manual issue claims bypass autonomous budget reservations"
+
+rm -rf "$CLAIM_LOCK" "$BUDGET_LOCK"
+CURRENT_CLAIM_REF=""
+run_and_capture_rc claim_rc claim_autonomous_issue 78
+assert_eq "0" "$claim_rc" "autonomous issue claim"
+[[ -d "$CLAIM_LOCK" ]] || fail "autonomous issue did not acquire atomic issue claim"
+[[ -d "$BUDGET_LOCK" ]] || fail "autonomous issue did not reserve a budget slot"
+auto_claim_source=$(declare -f claim_autonomous_issue)
+claim_ref_line=$(printf '%s\n' "$auto_claim_source" | grep -n 'create_issue_claim_ref' | head -1 | cut -d: -f1)
+reserve_line=$(printf '%s\n' "$auto_claim_source" | grep -n 'reserve_pr_budget' | head -1 | cut -d: -f1)
+processing_line=$(printf '%s\n' "$auto_claim_source" | grep -n 'mark_issue_processing' | head -1 | cut -d: -f1)
+[[ "$claim_ref_line" -lt "$reserve_line" && "$reserve_line" -lt "$processing_line" ]] \
+  || fail "autonomous claim must win issue ref, reserve budget, then mark processing"
+release_issue_claim
+rm -rf "$BUDGET_LOCK"
 GH_MODE="budget"
-pass "only one worker can atomically claim an issue"
+pass "autonomous claims reserve one budget slot after winning the issue race"
+
+GH_MODE="claim"
+mkdir "$BUDGET_LOCK"
+rm -rf "$CLAIM_LOCK"
+CURRENT_CLAIM_REF=""
+run_and_capture_rc claim_rc claim_autonomous_issue 79
+assert_eq "1" "$claim_rc" "autonomous claim with exhausted budget"
+[[ ! -d "$CLAIM_LOCK" ]] || fail "budget-race loser retained its atomic issue claim"
+assert_eq "" "$CURRENT_CLAIM_REF" "budget-race loser current claim ref"
+rm -rf "$BUDGET_LOCK"
+GH_MODE="budget"
+pass "autonomous budget-race losers release their issue claim"
 
 GH_MODE="pr_lookup"
 PR_LOOKUP_MODE="error"
@@ -560,6 +617,8 @@ assert_contains "$issue_source" 'capability_instructions=$(implementer_capabilit
 pass "implementation prompts use mode-specific capabilities and revision delta guard"
 
 worker_source=$(cat "$WORKER_SCRIPT")
+assert_not_contains "$worker_source" "count_remote_worker_prs_today" "worker PR history must not consume autonomous budget"
+assert_contains "$worker_source" 'cap autonomous loop:auto PR attempts per UTC day' "source documents autonomous-only budget"
 # shellcheck disable=SC2016 # Assertions intentionally match literal shell source.
 assert_contains "$worker_source" 'git/matching-refs/${prefix}' "budget uses matching-refs endpoint"
 # shellcheck disable=SC2016 # Assertions intentionally match literal shell source.
@@ -577,6 +636,14 @@ done
 assert_contains "$label_setup_source" '--force' "label setup is idempotent"
 main_source=$(sed -n '/^main()/,/^}/p' "$WORKER_SCRIPT")
 assert_contains "$main_source" 'ensure_loop_labels' "worker startup provisions required labels"
+# shellcheck disable=SC2016 # Assertions intentionally match literal shell source.
+assert_contains "$main_source" 'is_autonomous_issue "$issue_json"' "main loop classifies loop:auto issues"
+# shellcheck disable=SC2016 # Assertions intentionally match literal shell source.
+assert_contains "$main_source" '[[ "$is_auto_issue" == "true" ]] && ! pr_budget_remaining' "only autonomous work checks budget"
+# shellcheck disable=SC2016 # Assertions intentionally match literal shell source.
+assert_contains "$main_source" 'process_issue "$issue_json" "$is_auto_issue"' "main loop passes budget classification to processing"
+# shellcheck disable=SC2016 # Assertions intentionally match literal shell source.
+assert_not_contains "$main_source" '[[ "$is_revision" != "true" ]] && ! pr_budget_remaining' "manual issues must not share the old new-issue budget guard"
 pass "fresh repositories receive required queue and status labels"
 
 verify_runner_source=$(declare -f run_agent_command)

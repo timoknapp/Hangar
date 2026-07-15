@@ -25,3 +25,5 @@ container images are distributed at this time.
 
 - Unified the trusted interactive service and all guarded workers under one `hangar-fleet`
   Compose project while retaining separate service-level trust boundaries and persistent volumes.
+- Scoped `maxPrsPerDay` to autonomous `loop:auto` work. Human-created `squad` issues and revisions
+  now bypass the autonomous budget and manual issues are selected before generated work.
