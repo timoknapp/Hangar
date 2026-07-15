@@ -1,0 +1,17 @@
+# Squad Worker shell config
+source ~/.workspace_env 2>/dev/null || true
+export PATH="/usr/local/bin:$PATH"
+export TERM=xterm-256color
+
+# Aliases
+alias c='copilot'
+alias cs='squad init && copilot --agent squad --yolo'
+csr() {
+  copilot --agent squad --yolo --resume="$@"
+}
+alias logs='tmux attach-session -t worker'
+
+# cd into workspace
+if [[ -n "${WORKSPACE_DIR:-}" ]] && [[ -d "$WORKSPACE_DIR" ]]; then
+  cd "$WORKSPACE_DIR"
+fi

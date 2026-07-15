@@ -1,0 +1,50 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
+
+permissions:
+  contents: read
+
+jobs:
+  test-and-build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends jq shellcheck
+
+      - name: ShellCheck lint
+        run: |
+          shellcheck -x *.sh worker/*.sh tests/*.sh
+
+      - name: Run test suite
+        run: |
+          bash tests/final-gate.sh
+
+      - name: Validate unified Compose model
+        run: |
+          cp repos.example.json repos.json
+          cp .env.workers.example .env.workers
+          ./deploy.sh generate
+          docker compose \
+            -p hangar-fleet \
+            -f docker-compose.yml \
+            -f docker-compose.workers.yml \
+            --env-file .env.workers \
+            config --quiet
+
+      - name: Build interactive Dockerfile
+        run: |
+          docker build -t hangar-hub:ci .
+
+      - name: Build worker Dockerfile
+        run: |
+          docker build -t hangar-worker:ci worker/
