@@ -19,7 +19,8 @@ publisher_token=$(cat /home/copilot/.github-app-token)
 model_token="$COPILOT_PAT"
 default_branch="$REPO_BRANCH"
 default_ref="refs/heads/${default_branch}"
-default_sha=$(git -C "$WORKSPACE_DIR" rev-parse "refs/remotes/origin/${default_branch}")
+default_sha=$(GH_TOKEN="$publisher_token" gh api \
+  "repos/${repo_slug}/git/ref/heads/${default_branch}" --jq '.object.sha')
 [[ "$default_sha" =~ ^[0-9a-f]{40}$ ]]
 
 headers=$(mktemp)

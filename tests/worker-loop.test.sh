@@ -593,7 +593,7 @@ token_boundary_source=$(cat "$TOKEN_BOUNDARY_SCRIPT")
 assert_not_contains "$token_boundary_source" '--data "{}"' "token boundary must not use malformed empty payloads"
 assert_contains "$token_boundary_source" 'assert_publisher_collision' "token boundary uses a write-capable positive control"
 # shellcheck disable=SC2016 # Assertions intentionally match literal shell source.
-assert_contains "$token_boundary_source" 'refs/remotes/origin/${default_branch}' "token boundary uses the existing default ref"
+assert_contains "$token_boundary_source" 'git/ref/heads/${default_branch}' "token boundary queries the authoritative default ref"
 # shellcheck disable=SC2016 # Assertions intentionally match literal jq source.
 assert_contains "$token_boundary_source" 'head: $branch, base: $branch' "token boundary uses an impossible same-branch PR"
 pass "token boundary uses non-mutating collision probes"
