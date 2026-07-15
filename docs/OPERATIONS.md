@@ -7,7 +7,7 @@
 ## Table of contents
 
 1. [Daily workflow](#1-daily-workflow)
-2. [Fleet management](#2-fleet-management)
+2. [Platform management](#2-platform-management)
 3. [Viewing logs](#3-viewing-logs)
 4. [Cockpit web terminal](#4-cockpit-web-terminal)
 5. [Worker health and preflight](#5-worker-health-and-preflight)
@@ -35,13 +35,13 @@ The normal operating pattern once Hangar is running:
 
 ---
 
-## 2. Fleet management
+## 2. Platform management
 
 ### Start / stop
 
 ```bash
-./deploy.sh up       # start all workers (regenerates compose first)
-./deploy.sh down     # stop and remove all worker containers (volumes preserved)
+./deploy.sh up       # start interactive Hangar and all workers
+./deploy.sh down     # stop/remove the complete stack (volumes preserved)
 ```
 
 ### Restart a specific worker
@@ -49,6 +49,12 @@ The normal operating pattern once Hangar is running:
 ```bash
 ./deploy.sh restart 1    # restart worker-1
 ./deploy.sh restart 3    # restart worker-3
+```
+
+### Restart the trusted interactive service
+
+```bash
+./deploy.sh restart-interactive
 ```
 
 ### Reset a worker (wipe workspace)
@@ -60,19 +66,23 @@ The normal operating pattern once Hangar is running:
 Use this if the workspace git state is corrupted or if you want the worker to re-clone from
 scratch. This does **not** delete the `copilot-data` or `sshd` volumes.
 
-### Show running workers
+### Show the platform
 
 ```bash
 ./deploy.sh status
 # or
-docker compose -f docker-compose.workers.yml ps
+docker compose -p hangar-fleet \
+  -f docker-compose.yml \
+  -f docker-compose.workers.yml \
+  --env-file .env.workers ps
 ```
 
 ### Change the Copilot model for all workers
 
 Pass a model ID available to your Copilot plan to `./deploy.sh set-model`. This updates the model
-in `repos.json`, regenerates the compose file, and recreates all running containers. Leave
-`model` empty to use the Copilot CLI default rather than pinning an ID that may become stale.
+in `repos.json`, regenerates the compose file, and recreates only worker services; the interactive
+workstation stays running. Leave `model` empty to use the Copilot CLI default rather than pinning
+an ID that may become stale.
 
 ---
 
@@ -85,8 +95,11 @@ docker logs -f squad-worker-1
 # Last 100 lines
 docker logs --tail=100 squad-worker-1
 
-# All workers
-docker compose -p hangar-fleet -f docker-compose.workers.yml --env-file .env.workers logs -f
+# Complete platform
+docker compose -p hangar-fleet \
+  -f docker-compose.yml \
+  -f docker-compose.workers.yml \
+  --env-file .env.workers logs -f
 ```
 
 ### Log markers
@@ -102,19 +115,27 @@ docker compose -p hangar-fleet -f docker-compose.workers.yml --env-file .env.wor
 
 ## 4. Cockpit web terminal
 
-Enable in `.env.workers`:
+The unified stack has two intentionally different terminal types:
+
+- `hangar`: trusted operator workstation, SSH 2222 and optional ttyd 7681
+- `squad-worker-N`: guarded autonomous publisher/implementer runtime, SSH 2231+ and ttyd 7691+
+
+Enable either terminal type in `.env.workers`:
 
 ```dotenv
+INTERACTIVE_ENABLE_TTYD=true
 ENABLE_TTYD=true
 ```
 
-Then restart the target worker:
+Then restart the corresponding service:
 
 ```bash
+./deploy.sh restart-interactive
 ./deploy.sh restart 1
 ```
 
-Access the Cockpit at `http://127.0.0.1:7691` (worker-1). Worker-2 is at `7692`, etc.
+Access trusted interactive Hangar at `http://127.0.0.1:7681`; worker-1 is at
+`http://127.0.0.1:7691`, worker-2 at `7692`, etc.
 
 The Cockpit opens a live, **writable** tmux session as the trusted `copilot` publisher user. You can:
 
@@ -128,9 +149,11 @@ The Cockpit opens a live, **writable** tmux session as the trusted `copilot` pub
 
 ### SSH access
 
-If `SSH_AUTHORIZED_KEY` is set in `.env.workers`:
+The trusted interactive service uses the SSH identity persisted by `auth-setup.sh`. Workers use
+`SSH_AUTHORIZED_KEY` from `.env.workers`:
 
 ```bash
+ssh -p 2222 copilot@127.0.0.1    # trusted interactive Hangar
 ssh -p 2231 copilot@127.0.0.1    # worker-1
 ssh -p 2232 copilot@127.0.0.1    # worker-2
 ```
@@ -171,7 +194,7 @@ gh api repos/<owner>/<repo>/git/matching-refs/heads/squad-claims/
 
 1. Generate a new fine-grained PAT (Copilot Requests account permission only) from GitHub Settings.
 2. Update `COPILOT_PAT` in `.env.workers`.
-3. Restart all workers: `./deploy.sh down && ./deploy.sh up`
+3. Run `./deploy.sh up`; Compose recreates affected workers without restarting interactive Hangar.
 
 Workers do not cache the PAT between restarts; the new value takes effect immediately on the
 next container start.
@@ -180,7 +203,7 @@ next container start.
 
 1. In your GitHub App settings, generate a new private key.
 2. Replace the `.pem` file at the path specified in `GH_APP_PEM_FILE`.
-3. Restart workers: `./deploy.sh down && ./deploy.sh up`
+3. Run `./deploy.sh up` to recreate affected workers.
 4. Revoke the old private key from the GitHub App settings.
 
 > The short-lived App installation token (generated from the PEM) is refreshed roughly every
@@ -297,11 +320,16 @@ AUTO_UPDATE_CLI=false
 The worker image is built on `./deploy.sh up` if it doesn't exist. To force a rebuild:
 
 ```bash
-# Force rebuild without cache (picks up OS + npm updates)
-docker compose -f docker-compose.workers.yml build --no-cache
+# Regenerate workers, then rebuild only worker services without cache
+./deploy.sh generate
+docker compose -p hangar-fleet \
+  -f docker-compose.yml \
+  -f docker-compose.workers.yml \
+  --env-file .env.workers \
+  build --no-cache $(jq -r 'keys[] | "squad-\(.)"' repos.json)
 
-# Then restart
-./deploy.sh down && ./deploy.sh up
+# Recreate only services whose image changed
+./deploy.sh up
 ```
 
 Set `CACHE_BUST` explicitly only when you need to invalidate the CLI install layer; normal
@@ -347,22 +375,26 @@ Hangar does not ship a monitoring stack. Recommended approaches:
 
 ### Log forwarding
 
-Use Docker's log drivers (`json-file`, `syslog`, `fluentd`) to forward container logs to your
-existing log aggregation system:
+Use Docker's daemon-level log-driver configuration (`json-file`, `local`, `syslog`, `fluentd`)
+to forward or rotate logs consistently across the complete stack. Do not hand-edit
+`docker-compose.workers.yml`; it is regenerated by `deploy.sh`. For per-service logging policy,
+change the worker template in `deploy.sh` and the interactive service in `docker-compose.yml`,
+then add a generated-Compose regression test.
 
-```yaml
-# In docker-compose.workers.yml (add to each service)
-logging:
-  driver: "json-file"
-  options:
-    max-size: "50m"
-    max-file: "5"
+```json
+{
+  "log-driver": "local",
+  "log-opts": {
+    "max-size": "50m",
+    "max-file": "5"
+  }
+}
 ```
 
 ### Health check
 
-Each worker container exposes no HTTP health endpoint by default. A simple Docker health
-check can be added to verify the polling loop is alive:
+Each worker container exposes no HTTP health endpoint by default. A simple Docker health check
+can be added to the worker template in `deploy.sh` to verify the polling loop is alive:
 
 ```yaml
 healthcheck:

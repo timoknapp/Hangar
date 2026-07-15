@@ -1,11 +1,12 @@
 #!/usr/bin/env bash
 # =============================================================================
-# deploy.sh — Generate docker-compose.workers.yml from repos.json and run it
+# deploy.sh — Generate the worker services and manage the unified Hangar stack
 #
 # Usage:
-#   ./deploy.sh up                  # Generate compose file and start all workers
-#   ./deploy.sh down                # Tear down all workers
+#   ./deploy.sh up                  # Start interactive Hangar + all workers
+#   ./deploy.sh down                # Tear down the complete Hangar stack
 #   ./deploy.sh restart [N]         # Restart a specific worker (e.g. ./deploy.sh restart 3)
+#   ./deploy.sh restart-interactive # Rebuild/restart the trusted interactive service
 #   ./deploy.sh reset [N]           # Delete workspace volume and restart worker N
 #   ./deploy.sh generate            # Only generate the compose file (no docker action)
 #   ./deploy.sh status              # Show running workers
@@ -13,13 +14,14 @@
 #
 # Configuration:
 #   repos.json      — Repo-to-worker assignment (only file you edit for fleet changes)
-#   .env.workers    — Shared secrets (GH App, SSH key, Copilot PAT, ports)
+#   .env.workers    — Platform settings and shared secrets
 # =============================================================================
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPOS_JSON="${REPOS_JSON:-$SCRIPT_DIR/repos.json}"
 COMPOSE_FILE="${COMPOSE_FILE:-$SCRIPT_DIR/docker-compose.workers.yml}"
+INTERACTIVE_COMPOSE_FILE="${INTERACTIVE_COMPOSE_FILE:-$SCRIPT_DIR/docker-compose.yml}"
 ENV_FILE="${ENV_FILE:-$SCRIPT_DIR/.env.workers}"
 
 # ---------------------------------------------------------------------------
@@ -36,6 +38,11 @@ if [[ ! -f "$ENV_FILE" ]]; then
   echo "ERROR: .env.workers not found at $ENV_FILE"
   echo "  Copy from .env.workers.example and fill in secrets:"
   echo "    cp ${SCRIPT_DIR}/.env.workers.example ${ENV_FILE}"
+  exit 1
+fi
+
+if [[ ! -f "$INTERACTIVE_COMPOSE_FILE" ]]; then
+  echo "ERROR: interactive compose file not found at $INTERACTIVE_COMPOSE_FILE"
   exit 1
 fi
 
@@ -163,6 +170,22 @@ EOF
   echo ">>> Generated $COMPOSE_FILE with $INDEX worker(s)"
 }
 
+# Every platform-level command uses both Compose files under one project. The
+# interactive workstation remains a separate trusted service, but Docker now
+# presents and manages Hangar as one stack.
+compose_platform() {
+  docker compose \
+    -p hangar-fleet \
+    -f "$INTERACTIVE_COMPOSE_FILE" \
+    -f "$COMPOSE_FILE" \
+    --env-file "$ENV_FILE" \
+    "$@"
+}
+
+worker_service_names() {
+  jq -r 'keys[] | "squad-\(.)"' "$REPOS_JSON" | sort -V
+}
+
 # ---------------------------------------------------------------------------
 # Commands
 # ---------------------------------------------------------------------------
@@ -175,36 +198,44 @@ case "$CMD" in
 
   up)
     generate_compose
-    echo ">>> Starting worker fleet..."
-    docker compose -p hangar-fleet -f "$COMPOSE_FILE" --env-file "$ENV_FILE" up -d --build
+    echo ">>> Starting unified Hangar platform..."
+    compose_platform up -d --build
     ;;
 
   down)
-    echo ">>> Stopping worker fleet..."
-    docker compose -p hangar-fleet -f "$COMPOSE_FILE" --env-file "$ENV_FILE" down
+    generate_compose
+    echo ">>> Stopping unified Hangar platform..."
+    compose_platform down
     ;;
 
   restart)
     WORKER_NUM="${2:?Usage: ./deploy.sh restart <worker-number>}"
     generate_compose
     echo ">>> Restarting squad-worker-${WORKER_NUM}..."
-    docker compose -p hangar-fleet -f "$COMPOSE_FILE" --env-file "$ENV_FILE" up -d --build "squad-worker-${WORKER_NUM}"
+    compose_platform up -d --build "squad-worker-${WORKER_NUM}"
+    ;;
+
+  restart-interactive)
+    generate_compose
+    echo ">>> Restarting trusted interactive Hangar service..."
+    compose_platform up -d --build hangar
     ;;
 
   reset)
     WORKER_NUM="${2:?Usage: ./deploy.sh reset <worker-number>}"
     echo ">>> Resetting squad-worker-${WORKER_NUM} (deleting workspace volume)..."
-    docker compose -p hangar-fleet -f "$COMPOSE_FILE" --env-file "$ENV_FILE" stop "squad-worker-${WORKER_NUM}" 2>/dev/null || true
+    generate_compose
+    compose_platform stop "squad-worker-${WORKER_NUM}" 2>/dev/null || true
     VOLUME_PREFIX="hangar-fleet"
     docker volume rm "${VOLUME_PREFIX}_squad-worker-${WORKER_NUM}-workspace" 2>/dev/null || \
     docker volume rm "squad-worker-${WORKER_NUM}-workspace" 2>/dev/null || \
       echo "WARNING: Could not find workspace volume. It may have a different prefix."
-    generate_compose
-    docker compose -p hangar-fleet -f "$COMPOSE_FILE" --env-file "$ENV_FILE" up -d --build "squad-worker-${WORKER_NUM}"
+    compose_platform up -d --build "squad-worker-${WORKER_NUM}"
     ;;
 
   status)
-    docker compose -p hangar-fleet -f "$COMPOSE_FILE" --env-file "$ENV_FILE" ps
+    generate_compose
+    compose_platform ps
     ;;
 
   set-model)
@@ -216,16 +247,21 @@ case "$CMD" in
     echo ">>> repos.json updated."
     generate_compose
     echo ">>> Recreating workers to apply new COPILOT_MODEL..."
-    docker compose -p hangar-fleet -f "$COMPOSE_FILE" --env-file "$ENV_FILE" up -d --force-recreate --no-build
+    WORKER_SERVICES=()
+    while IFS= read -r worker_service; do
+      WORKER_SERVICES+=("$worker_service")
+    done < <(worker_service_names)
+    compose_platform up -d --force-recreate --no-build "${WORKER_SERVICES[@]}"
     echo ">>> Done. All workers now running model: ${NEW_MODEL}"
     ;;
 
   *)
-    echo "Usage: ./deploy.sh {up|down|restart N|reset N|generate|status|set-model <model>}"
+    echo "Usage: ./deploy.sh {up|down|restart N|restart-interactive|reset N|generate|status|set-model <model>}"
     echo ""
-    echo "  up                Generate compose from repos.json and start all workers"
-    echo "  down              Stop all workers"
+    echo "  up                Generate workers and start the complete Hangar platform"
+    echo "  down              Stop the interactive service and all workers"
     echo "  restart N         Restart worker N (regenerates compose first)"
+    echo "  restart-interactive  Rebuild/restart the trusted interactive service"
     echo "  reset N           Delete worker N's workspace volume and restart fresh"
     echo "  generate          Only regenerate docker-compose.workers.yml"
     echo "  status            Show running workers"

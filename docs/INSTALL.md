@@ -10,9 +10,9 @@
 2. [GitHub App setup](#2-github-app-setup)
 3. [Copilot PAT](#3-copilot-pat)
 4. [Clone and configure](#4-clone-and-configure)
-5. [Build and start workers](#5-build-and-start-workers)
+5. [Build and start Hangar](#5-build-and-start-hangar)
 6. [Verify the installation](#6-verify-the-installation)
-7. [Optional: Cockpit web terminal](#7-optional-cockpit-web-terminal)
+7. [Optional: browser terminals](#7-optional-browser-terminals)
 8. [Optional: SSH access](#8-optional-ssh-access)
 9. [Troubleshooting](#9-troubleshooting)
 
@@ -104,7 +104,9 @@ cd Hangar
 cp .env.workers.example .env.workers
 ```
 
-Open `.env.workers` and fill in the four required values from sections 2 and 3.
+Open `.env.workers` and fill in the four required values from sections 2 and 3. The same file also
+contains namespaced `INTERACTIVE_*` settings for the trusted workstation service; defaults keep
+all management ports on loopback.
 
 ### Repository assignment
 
@@ -121,7 +123,7 @@ Edit `repos.json`. Each top-level key is a worker ID (e.g. `worker-1`, `worker-2
     "owner":  "your-org",
     "repo":   "your-repo",
     "branch": "main",
-      "model":  "",
+    "model":  "",
     "effort": "",
     "context": "",
     "loop": {
@@ -151,7 +153,7 @@ MCP configurations are trusted code with local shell and outbound-network capabi
 
 ---
 
-## 5. Build and start workers
+## 5. Build and start Hangar
 
 ```bash
 ./deploy.sh up
@@ -160,8 +162,9 @@ MCP configurations are trusted code with local shell and outbound-network capabi
 This command:
 
 1. Reads `repos.json` and generates `docker-compose.workers.yml`.
-2. Builds the worker image from `worker/Dockerfile`.
-3. Starts all worker containers with `docker compose up -d`.
+2. Combines `docker-compose.yml` with the generated worker services under project `hangar-fleet`.
+3. Builds the trusted interactive image and guarded worker image.
+4. Starts `hangar` plus every `squad-worker-N` service as one Compose stack.
 
 The generated `docker-compose.workers.yml` is auto-generated and should not be edited by hand —
 re-run `./deploy.sh generate` (or `up`) if you change `repos.json`.
@@ -171,7 +174,8 @@ re-run `./deploy.sh generate` (or `up`) if you change `repos.json`.
 ## 6. Verify the installation
 
 ```bash
-./deploy.sh status           # should show containers running
+./deploy.sh status           # should show hangar plus all workers
+docker logs hangar           # trusted interactive service
 docker logs squad-worker-1   # watch startup messages
 docker exec squad-worker-1 /home/copilot/runtime-preflight.sh
 ```
@@ -193,18 +197,26 @@ check the PAT, Copilot plan, and optional `COPILOT_MODEL` selection.
 
 ---
 
-## 7. Optional: Cockpit web terminal
+## 7. Optional: browser terminals
 
-The Cockpit exposes a live tmux session in a browser tab via **ttyd**.
+The trusted interactive service and each worker can expose a live tmux session via **ttyd**.
+They remain separate security contexts even though Docker manages them in one stack.
 
 ```dotenv
 # .env.workers
+INTERACTIVE_ENABLE_TTYD=true
 ENABLE_TTYD=true
 ```
 
-Restart the worker: `./deploy.sh restart 1`
+Restart only what changed:
 
-Access at `http://127.0.0.1:7691` (worker-1). Ports increment per worker: 7692, 7693, etc.
+```bash
+./deploy.sh restart-interactive
+./deploy.sh restart 1
+```
+
+The interactive terminal is `http://127.0.0.1:7681`. Worker-1 is `http://127.0.0.1:7691`;
+worker ports increment to 7692, 7693, and so on.
 
 > **Do not expose ttyd to the internet.** Use a reverse proxy with authentication (e.g. nginx
 > with `auth_basic`, or a VPN).
@@ -219,13 +231,14 @@ Paste your public key in `.env.workers`:
 SSH_AUTHORIZED_KEY=ssh-ed25519 AAAA... your-key-comment
 ```
 
-Restart the worker. Connect with:
+Restart the worker. Connect to the trusted interactive service or a worker with:
 
 ```bash
+ssh -p 2222 copilot@127.0.0.1
 ssh -p 2231 copilot@127.0.0.1
 ```
 
-Ports increment per worker: 2232, 2233, etc.
+Worker ports increment: 2232, 2233, etc.
 
 ---
 
@@ -271,6 +284,8 @@ rm docker-compose.workers.yml
 Override ports in `.env.workers`:
 
 ```dotenv
+INTERACTIVE_TTYD_PORT=7800
+INTERACTIVE_SSH_PORT=2300
 TTYD_PORT_W1=7801
 SSH_PORT_W1=2301
 ```

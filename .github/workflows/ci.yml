@@ -29,7 +29,19 @@ jobs:
         run: |
           bash tests/final-gate.sh
 
-      - name: Build hub Dockerfile
+      - name: Validate unified Compose model
+        run: |
+          cp repos.example.json repos.json
+          cp .env.workers.example .env.workers
+          ./deploy.sh generate
+          docker compose \
+            -p hangar-fleet \
+            -f docker-compose.yml \
+            -f docker-compose.workers.yml \
+            --env-file .env.workers \
+            config --quiet
+
+      - name: Build interactive Dockerfile
         run: |
           docker build -t hangar-hub:ci .
 

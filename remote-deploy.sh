@@ -39,6 +39,7 @@ REMOTE_PATH="${REMOTE_PATH:-~/hangar}"
 # file (deploy.sh regenerates it on the host).
 SYNC_FILES=(
   deploy.sh
+  docker-compose.yml
   Dockerfile
   entrypoint.sh
   auth-setup.sh

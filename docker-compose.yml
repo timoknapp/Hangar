@@ -1,15 +1,14 @@
 # =============================================================================
-# docker-compose.yml — Interactive Hangar session (single container)
+# docker-compose.yml — Trusted interactive service for the unified Hangar stack
 #
 # Usage:
-#   cp .env.example .env   # then edit .env
-#   docker compose up -d
+#   cp .env.workers.example .env.workers
+#   cp repos.example.json repos.json
+#   ./deploy.sh up
 #   ssh -p 2222 copilot@localhost
-#
-# For the autonomous worker fleet, use deploy.sh instead.
 # =============================================================================
 
-name: hangar
+name: hangar-fleet
 
 services:
   hangar:
@@ -20,19 +19,20 @@ services:
         CACHE_BUST: ${CACHE_BUST:-0}
     container_name: hangar
     hostname: hangar
+    init: true
     restart: unless-stopped
     environment:
-      - REPO_URL=${REPO_URL:-}
-      - REPO_BRANCH=${REPO_BRANCH:-main}
-      - WORKSPACE_DIR=/workspace/${WORKSPACE_NAME:-repo}
-      - EXTRA_REPOS=${EXTRA_REPOS:-}
+      - REPO_URL=${INTERACTIVE_REPO_URL:-}
+      - REPO_BRANCH=${INTERACTIVE_REPO_BRANCH:-main}
+      - WORKSPACE_DIR=/workspace/${INTERACTIVE_WORKSPACE_NAME:-repo}
+      - EXTRA_REPOS=${INTERACTIVE_EXTRA_REPOS:-}
       - TTYD_PORT=7681
-      - ENABLE_TTYD=${ENABLE_TTYD:-false}
-      - AUTO_UPDATE_CLI=${AUTO_UPDATE_CLI:-false}
+      - ENABLE_TTYD=${INTERACTIVE_ENABLE_TTYD:-false}
+      - AUTO_UPDATE_CLI=${INTERACTIVE_AUTO_UPDATE_CLI:-false}
     ports:
-      - "${BIND_ADDRESS:-127.0.0.1}:${TTYD_PORT:-7681}:8080"
-      - "${BIND_ADDRESS:-127.0.0.1}:${SSH_PORT:-2222}:22"
-      - "${BIND_ADDRESS:-127.0.0.1}:${PREVIEW_PORT:-4173}:4173"
+      - "${INTERACTIVE_BIND_ADDRESS:-127.0.0.1}:${INTERACTIVE_TTYD_PORT:-7681}:8080"
+      - "${INTERACTIVE_BIND_ADDRESS:-127.0.0.1}:${INTERACTIVE_SSH_PORT:-2222}:22"
+      - "${INTERACTIVE_BIND_ADDRESS:-127.0.0.1}:${INTERACTIVE_PREVIEW_PORT:-4173}:4173"
     volumes:
       - hangar-gh-auth:/home/copilot/.config/gh
       - hangar-ssh:/home/copilot/.ssh
@@ -42,7 +42,12 @@ services:
 
 volumes:
   hangar-gh-auth:
+    name: "${INTERACTIVE_VOLUME_PREFIX:-hangar}_hangar-gh-auth"
   hangar-ssh:
+    name: "${INTERACTIVE_VOLUME_PREFIX:-hangar}_hangar-ssh"
   hangar-workspace:
+    name: "${INTERACTIVE_VOLUME_PREFIX:-hangar}_hangar-workspace"
   hangar-copilot-data:
+    name: "${INTERACTIVE_VOLUME_PREFIX:-hangar}_hangar-copilot-data"
   hangar-sshd:
+    name: "${INTERACTIVE_VOLUME_PREFIX:-hangar}_hangar-sshd"

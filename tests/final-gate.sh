@@ -54,6 +54,7 @@ for f in \
   tests/list-active-claims.remote.sh \
   tests/mcp-capability-smoke.remote.sh \
   tests/prepare-revision-retry.remote.sh \
+  tests/platform-compose.test.sh \
   tests/pr-guard.test.sh \
   tests/readme-content.test.sh \
   tests/public-release-check.sh \
@@ -77,6 +78,7 @@ shellcheck "${shell_scripts[@]}"
 
 # --- Local test execution ---
 bash tests/readme-content.test.sh
+bash tests/platform-compose.test.sh
 bash tests/public-release-check.test.sh
 bash tests/public-release-check.sh
 bash tests/config-equivalence.sh

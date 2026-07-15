@@ -20,3 +20,8 @@ container images are distributed at this time.
 - `tests/final-gate.sh` — pre-merge validation gate.
 - Credential-guard launcher and preload constructor for worker model-token isolation.
 - `.env.workers.example` — reference configuration template.
+
+### Changed
+
+- Unified the trusted interactive service and all guarded workers under one `hangar-fleet`
+  Compose project while retaining separate service-level trust boundaries and persistent volumes.

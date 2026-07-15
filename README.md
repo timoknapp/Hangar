@@ -104,8 +104,8 @@ COPILOT_PAT=github_pat_...   # fine-grained, Copilot Requests permission only
 The App installation ID is the number at the end of its installation URL. See
 [the full GitHub App walkthrough](docs/INSTALL.md#2-github-app-setup).
 
-All other settings have safe defaults. `ENABLE_TTYD` defaults to `false`; `SSH_AUTHORIZED_KEY`
-is optional.
+All other settings have safe defaults. Worker `ENABLE_TTYD` and
+`INTERACTIVE_ENABLE_TTYD` both default to `false`; worker `SSH_AUTHORIZED_KEY` is optional.
 
 ### 3. Assign a repository to a worker
 
@@ -153,31 +153,32 @@ them through your normal repository workflow. Unattended workers treat target-re
 configuration as trusted code. See the
 [Squad project](https://github.com/bradygaster/squad) for customization options.
 
-### 5. Start the fleet
+### 5. Start Hangar
 
 ```bash
-./deploy.sh up        # generates docker-compose.workers.yml, then starts workers
-./deploy.sh status    # confirm containers are running
+./deploy.sh up        # starts interactive Hangar + generated worker services
+./deploy.sh status    # confirms the complete hangar-fleet stack
 ```
 
-Workers are now polling for open issues carrying the `squad` label. With the guarded starter
-profile above, a worker claims, implements, verifies, independently reviews, and opens a ready PR
-or clearly flagged draft. If you disable verification or the critic, those stages are skipped as
-documented in the configuration reference.
+Docker now shows one `hangar-fleet` Compose project containing the trusted `hangar` workstation
+and every `squad-worker-N` service. Workers poll for open issues carrying the `squad` label. With
+the guarded starter profile above, a worker claims, implements, verifies, independently reviews,
+and opens a ready PR or clearly flagged draft. If you disable verification or the critic, those
+stages are skipped as documented in the configuration reference.
 
-> **Loopback-only default.** The ttyd (port 7691+) and SSH (port 2231+) management interfaces
-> bind to `127.0.0.1` unless you override them. Do not expose worker ports directly to the
-> internet; use a VPN or authenticated reverse proxy.
+> **Loopback-only default.** Interactive SSH/ttyd use ports 2222/7681; worker SSH/ttyd use
+> 2231+/7691+. All bind to `127.0.0.1` unless explicitly overridden. Do not expose these ports
+> directly to the internet; use a VPN or authenticated reverse proxy.
 
 ## 🖥️ Interactive workstation (optional)
 
-The root `docker-compose.yml` builds a separate, operator-driven development container rather
-than an autonomous worker. It provides SSH/ttyd, tmux, Copilot CLI, Squad CLI, and persistent
-workspace/auth volumes:
+The `hangar` service is an operator-driven development container rather than an autonomous
+worker. It provides SSH/ttyd, tmux, Copilot CLI, Squad CLI, and persistent workspace/auth volumes.
+It starts with the workers under the same Compose project; configure its `INTERACTIVE_*` values
+in `.env.workers`, then run the one-time authentication helper if needed:
 
 ```bash
-cp .env.example .env
-docker compose up -d
+./deploy.sh restart-interactive
 docker exec -it hangar su - copilot -c 'bash ~/auth-setup.sh'
 ```
 
@@ -192,10 +193,11 @@ on loopback, and do not use it as a sandbox for untrusted repositories.
 ```mermaid
 flowchart TD
     subgraph "Your hardware — Hangar host"
-        D["deploy.sh"] -->|"generates"| C["docker-compose.workers.yml"]
-        C -->|"starts"| W1["squad-worker-1"]
-        C -->|"starts"| W2["squad-worker-2"]
-        C -->|"starts"| Wn["squad-worker-n …"]
+      D["deploy.sh"] -->|"combines"| C["docker-compose.yml + generated workers"]
+      C -->|"one hangar-fleet project"| H["hangar — trusted interactive service"]
+      C --> W1["squad-worker-1"]
+      C --> W2["squad-worker-2"]
+      C --> Wn["squad-worker-n …"]
     end
 
     subgraph "squad-worker-N container"
@@ -511,15 +513,28 @@ sequenceDiagram
 | `loop.criticRubric` | `"auto"` | `"auto"` \| `"repo-aware"` \| repository-relative rubric path |
 | `loop.implementer` | `"plain"` | `"plain"` (restricted) \| `"squad"` (full Squad coordinator; v0.1 recommended path) |
 
+### Interactive settings in `.env.workers`
+
+| Setting | Default | Description |
+| --- | --- | --- |
+| `INTERACTIVE_REPO_URL` | empty | Optional repository cloned into the trusted workstation |
+| `INTERACTIVE_WORKSPACE_NAME` | `repo` | Workspace directory below `/workspace` |
+| `INTERACTIVE_ENABLE_TTYD` | `false` | Enable the writable browser terminal |
+| `INTERACTIVE_BIND_ADDRESS` | `127.0.0.1` | Bind address for interactive SSH, ttyd, and preview ports |
+| `INTERACTIVE_TTYD_PORT` | `7681` | Interactive browser-terminal port |
+| `INTERACTIVE_SSH_PORT` | `2222` | Interactive SSH port |
+| `INTERACTIVE_VOLUME_PREFIX` | `hangar` | Stable volume prefix; keep unchanged when upgrading existing data |
+
 ### `deploy.sh` commands
 
 ```text
-./deploy.sh up                  Start the fleet (generates compose + builds images)
-./deploy.sh down                Stop all workers
+./deploy.sh up                  Start interactive Hangar and all workers
+./deploy.sh down                Stop the complete Hangar platform
 ./deploy.sh restart [N]         Restart worker N
+./deploy.sh restart-interactive Rebuild/restart only the interactive service
 ./deploy.sh reset [N]           Wipe workspace volume and restart worker N
 ./deploy.sh generate            Regenerate compose file only (no docker action)
-./deploy.sh status              Show running containers
+./deploy.sh status              Show all services in the unified stack
 ./deploy.sh set-model <model>   Update Copilot model for all workers
 ```
 

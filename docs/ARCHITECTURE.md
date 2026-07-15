@@ -26,13 +26,16 @@ container runs a tight polling loop: find an unclaimed issue → claim it atomic
 it with Copilot → run the configured verification gate → optionally run a fresh critic → open a
 ready PR or clearly flagged draft.
 A human reviews and merges.
+Docker manages the trusted interactive workstation and all guarded workers as services in one
+`hangar-fleet` Compose project; shared stack ownership does not imply a shared trust boundary.
 
 ```text
 ┌─────────────────────────────────────────────────────────┐
 │                     Hangar host                         │
 │                                                         │
-│  deploy.sh ──► docker-compose.workers.yml               │
+│  deploy.sh ──► docker-compose.yml + generated workers   │
 │                │                                        │
+│                ├── hangar (trusted interactive shell)   │
 │                ├── squad-worker-1 (repo A)              │
 │                ├── squad-worker-2 (repo B)              │
 │                └── squad-worker-N (…)                   │
@@ -54,10 +57,17 @@ A human reviews and merges.
 
 | File | Role |
 | --- | --- |
-| `deploy.sh` | Orchestration entrypoint: generates compose file, drives `docker compose` |
+| `deploy.sh` | Orchestration entrypoint: combines interactive and generated worker services under `hangar-fleet` |
 | `repos.json` | Fleet configuration — maps worker IDs to repositories and loop settings |
-| `.env.workers` | Secret values (GitHub App credentials, Copilot PAT, port overrides) |
+| `.env.workers` | Platform settings, interactive settings, GitHub App credentials, and Copilot PAT |
+| `docker-compose.yml` | Trusted interactive `hangar` service definition |
 | `docker-compose.workers.yml` | Auto-generated; do not edit by hand |
+
+### Trusted interactive container
+
+The `hangar` service is an operator workstation with passwordless sudo, persistent GitHub/SSH
+authentication, and no publisher/implementer split. It shares Compose lifecycle and observability
+with workers but must be treated as trusted infrastructure, not as an untrusted-code sandbox.
 
 ### Worker container
 
@@ -232,8 +242,9 @@ The Cockpit is an nginx reverse proxy that:
 2. Injects `toolbar.js` into every page — a mobile touch toolbar for terminal keys and common
   Copilot/Squad commands.
 
-Enabled with `ENABLE_TTYD=true`. The nginx config (`worker/nginx.conf`) proxies `/` to ttyd
-and injects the toolbar script via `sub_filter`.
+Worker Cockpits are enabled with `ENABLE_TTYD=true`; trusted interactive ttyd is enabled with
+`INTERACTIVE_ENABLE_TTYD=true`. Their nginx configurations proxy `/` to ttyd and inject the
+toolbar script via `sub_filter`.
 
 The Cockpit is intentionally minimal, but it is **not read-only**: it is a writable shell as the
 publisher user. Keep it disabled unless needed and protect it with VPN/reverse-proxy authentication.
@@ -246,6 +257,9 @@ publisher user. Keep it disabled unless needed and protect it with VPN/reverse-p
 
 | Port (host) | Port (container) | Service | Binds to |
 | --- | --- | --- | --- |
+| 7681 | 8080 | Trusted interactive ttyd | `127.0.0.1` |
+| 2222 | 22 | Trusted interactive SSH | `127.0.0.1` |
+| 4173 | 4173 | Trusted interactive preview | `127.0.0.1` |
 | 7691 + N | 8080 | ttyd / Cockpit | `127.0.0.1` |
 | 2231 + N | 22 | SSH | `127.0.0.1` |
 
