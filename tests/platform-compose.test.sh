@@ -9,6 +9,7 @@ INTERACTIVE_COMPOSE="$ROOT/docker-compose.yml"
 ENV_EXAMPLE="$ROOT/.env.workers.example"
 REMOTE_DEPLOY="$ROOT/remote-deploy.sh"
 README="$ROOT/README.md"
+INTERACTIVE_DOCKERFILE="$ROOT/Dockerfile"
 
 fail() {
   echo "FAIL: $*" >&2
@@ -52,7 +53,9 @@ for key in \
   INTERACTIVE_REPO_URL \
   INTERACTIVE_REPO_BRANCH \
   INTERACTIVE_WORKSPACE_NAME \
-  INTERACTIVE_BIND_ADDRESS \
+  INTERACTIVE_TTYD_BIND_ADDRESS \
+  INTERACTIVE_SSH_BIND_ADDRESS \
+  INTERACTIVE_PREVIEW_BIND_ADDRESS \
   INTERACTIVE_TTYD_PORT \
   INTERACTIVE_SSH_PORT \
   INTERACTIVE_PREVIEW_PORT \
@@ -71,5 +74,12 @@ assert_contains "$README" 'one `hangar-fleet` Compose project' \
 if grep -Fq 'docker compose up -d' "$README"; then
   fail "README still advertises a separate interactive Compose lifecycle"
 fi
+if grep -Fq 'INTERACTIVE_BIND_ADDRESS' "$INTERACTIVE_COMPOSE" "$ENV_EXAMPLE" "$README"; then
+  fail "interactive ports still share one bind address"
+fi
+assert_contains "$INTERACTIVE_DOCKERFILE" 'PermitRootLogin no' \
+  "interactive SSH must explicitly reject root login"
+assert_contains "$INTERACTIVE_DOCKERFILE" 'KbdInteractiveAuthentication no' \
+  "interactive SSH must disable keyboard-interactive authentication"
 
 echo "Unified Hangar Compose project: PASS (interactive + generated workers)"
