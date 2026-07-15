@@ -1,0 +1,48 @@
+# =============================================================================
+# docker-compose.yml — Interactive Hangar session (single container)
+#
+# Usage:
+#   cp .env.example .env   # then edit .env
+#   docker compose up -d
+#   ssh -p 2222 copilot@localhost
+#
+# For the autonomous worker fleet, use deploy.sh instead.
+# =============================================================================
+
+name: hangar
+
+services:
+  hangar:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        CACHE_BUST: ${CACHE_BUST:-0}
+    container_name: hangar
+    hostname: hangar
+    restart: unless-stopped
+    environment:
+      - REPO_URL=${REPO_URL:-}
+      - REPO_BRANCH=${REPO_BRANCH:-main}
+      - WORKSPACE_DIR=/workspace/${WORKSPACE_NAME:-repo}
+      - EXTRA_REPOS=${EXTRA_REPOS:-}
+      - TTYD_PORT=7681
+      - ENABLE_TTYD=${ENABLE_TTYD:-false}
+      - AUTO_UPDATE_CLI=${AUTO_UPDATE_CLI:-false}
+    ports:
+      - "${BIND_ADDRESS:-127.0.0.1}:${TTYD_PORT:-7681}:8080"
+      - "${BIND_ADDRESS:-127.0.0.1}:${SSH_PORT:-2222}:22"
+      - "${BIND_ADDRESS:-127.0.0.1}:${PREVIEW_PORT:-4173}:4173"
+    volumes:
+      - hangar-gh-auth:/home/copilot/.config/gh
+      - hangar-ssh:/home/copilot/.ssh
+      - hangar-workspace:/workspace
+      - hangar-copilot-data:/home/copilot/.local/share
+      - hangar-sshd:/etc/ssh
+
+volumes:
+  hangar-gh-auth:
+  hangar-ssh:
+  hangar-workspace:
+  hangar-copilot-data:
+  hangar-sshd:

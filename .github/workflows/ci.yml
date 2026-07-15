@@ -1,0 +1,38 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  test-and-build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends jq shellcheck
+
+      - name: ShellCheck lint
+        run: |
+          shellcheck -x *.sh worker/*.sh tests/*.sh
+
+      - name: Run test suite
+        run: |
+          bash tests/final-gate.sh
+
+      - name: Build hub Dockerfile
+        run: |
+          docker build -t hangar-hub:ci .
+
+      - name: Build worker Dockerfile
+        run: |
+          docker build -t hangar-worker:ci worker/

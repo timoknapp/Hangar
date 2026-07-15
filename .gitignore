@@ -1,0 +1,52 @@
+# =============================================================================
+# Hangar — .gitignore
+# =============================================================================
+
+# --- Environment & Secrets ---
+.env
+.env.*
+!.env.example
+!.env.*.example
+repos.json
+docker-compose.workers.yml
+
+# --- Credentials & Keys ---
+*.pem
+*.key
+*.p12
+*.pfx
+*.crt
+id_rsa
+id_ed25519
+*.gpg
+gh-app-*.pem
+
+# --- Logs ---
+*.log
+logs/
+
+# --- OS Files ---
+.DS_Store
+Thumbs.db
+Desktop.ini
+._*
+
+# --- Editor / IDE ---
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.project
+.settings/
+
+# --- Docker build scratch ---
+tmp/
+.tmp/
+
+# --- Test artifacts ---
+tests/fixtures/*.generated
+tests/output/
+
+# --- Node (if any tooling is added later) ---
+node_modules/

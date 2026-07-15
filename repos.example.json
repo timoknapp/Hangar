@@ -1,0 +1,24 @@
+{
+  "worker-1": {
+    "url": "https://github.com/your-org/your-repo.git",
+    "branch": "main",
+    "owner": "your-org",
+    "repo": "your-repo",
+    "model": "",
+    "effort": "",
+    "context": "",
+    "loop": {
+      "autonomous": false,
+      "critic": true,
+      "criticModel": "",
+      "verify": "auto",
+      "maxRetries": 2,
+      "maxPrsPerDay": 2,
+      "maxOpenAutoIssues": 3,
+      "goalFile": "auto",
+      "workScope": "green-fit",
+      "criticRubric": "repo-aware",
+      "implementer": "squad"
+    }
+  }
+}

@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "capability-probe": {
+      "type": "local",
+      "command": "node",
+      "args": ["./.squad-capability-mcp.mjs"],
+      "env": {},
+      "tools": ["*"]
+    }
+  }
+}
