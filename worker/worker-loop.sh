@@ -48,7 +48,7 @@ git() {
 #   LOOP_CRITIC_MODEL       model for the critic (empty = same as implementer)
 #   LOOP_VERIFY             "off" | "auto" | "<literal cmd>" | ".loop/verify.sh"
 #   LOOP_MAX_RETRIES        self-correction attempts per quality gate
-#   LOOP_MAX_PRS_PER_DAY    guardrail: cap new-issue PRs per UTC day (0 = off)
+#   LOOP_MAX_PRS_PER_DAY    guardrail: cap loop:auto PR attempts per UTC day (0 = off)
 #   LOOP_MAX_OPEN_AUTO_ISSUES  cap concurrent auto-generated issues on the board
 #   LOOP_GOAL_FILE          "auto" | "<path>" — north-star for self-generated work
 #   LOOP_WORK_SCOPE         "all" | "green-fit" — planner capability boundary
@@ -619,30 +619,60 @@ $(gh run view "$run_id" --repo "$REPO_SLUG" --log-failed 2>/dev/null | tail -240
 }
 
 # ---------------------------------------------------------------------------
-# Find the oldest unclaimed issue (must have "squad" label)
+# Classify issue labels from the JSON returned by gh.
+# ---------------------------------------------------------------------------
+issue_has_label() {
+  local issue_json="$1"
+  local wanted_label="$2"
+  # jq 1.6 parses `label` as a control-flow keyword, including in some
+  # variable positions. Use a non-keyword argument name for image portability.
+  printf '%s' "$issue_json" | jq -e --arg wanted_label "$wanted_label" '
+    (.labels // []) | map(.name) | index($wanted_label) != null
+  ' >/dev/null
+}
+
+is_autonomous_issue() {
+  issue_has_label "$1" "loop:auto"
+}
+
+# Prefer human-created work over loop:auto work. This prevents an exhausted
+# autonomous budget from hiding a manual issue behind an older generated issue.
+select_next_unclaimed_issue() {
+  local issues_json="$1"
+  printf '%s' "$issues_json" | jq -c '
+    def label_names: ((.labels // []) | map(.name));
+    def eligible:
+      ((label_names | index("squad:processing")) == null)
+      and ((label_names | index("squad:done")) == null);
+
+    ([.[] | select(eligible and ((label_names | index("loop:auto")) == null))]
+      | sort_by(.number) | first)
+    //
+    ([.[] | select(eligible and ((label_names | index("loop:auto")) != null))]
+      | sort_by(.number) | first)
+    // empty
+  '
+}
+
+# ---------------------------------------------------------------------------
+# Find the next unclaimed issue (must have "squad" label). Manual issues are
+# selected before autonomously generated loop:auto issues.
 # ---------------------------------------------------------------------------
 find_unclaimed_issue() {
   local issues
+  # GitHub CLI has no paginated issue-list stream; inspect a bounded but ample
+  # queue window and prioritize manual work within it.
   issues=$(gh issue list \
     --repo "$REPO_SLUG" \
     --label "squad" \
     --state open \
     --json number,title,body,labels \
-    --limit 20 2>/dev/null) || {
+    --limit 100 2>/dev/null) || {
     log_error "Failed to fetch issues"
     return 1
   }
 
-  # Filter out issues with squad:processing or squad:done labels
-  # Pick the oldest (lowest issue number)
-  echo "$issues" | jq -r '
-    [ .[] | select(
-        ( .labels | map(.name) | index("squad:processing") | not )
-        and
-        ( .labels | map(.name) | index("squad:done") | not )
-      )
-    ] | sort_by(.number) | first // empty
-  '
+  select_next_unclaimed_issue "$issues"
 }
 
 # ---------------------------------------------------------------------------
@@ -721,7 +751,7 @@ release_issue_claim() {
   return 0
 }
 
-claim_issue() {
+create_issue_claim_ref() {
   local issue_num="$1"
 
   # Check if already claimed BEFORE doing anything
@@ -744,11 +774,14 @@ claim_issue() {
     return 1
   fi
   CURRENT_CLAIM_REF="$claim_ref"
+  return 0
+}
 
-  # Label only after winning the atomic claim.
+mark_issue_processing() {
+  local issue_num="$1"
+
   gh issue edit "$issue_num" --repo "$REPO_SLUG" --add-label "squad:processing" 2>/dev/null || {
     log_error "Failed to add squad:processing label to #${issue_num}"
-    release_issue_claim || true
     return 1
   }
 
@@ -756,7 +789,45 @@ claim_issue() {
   gh issue comment "$issue_num" --repo "$REPO_SLUG" \
     --body "🤖 Squad Worker ${WORKER_ID} processing this issue" 2>/dev/null || true
 
-  log "Claimed issue #${issue_num} atomically (${claim_ref})"
+  return 0
+}
+
+claim_issue() {
+  local issue_num="$1"
+
+  if ! create_issue_claim_ref "$issue_num"; then
+    return 1
+  fi
+  if ! mark_issue_processing "$issue_num"; then
+    # The reservation intentionally remains consumed: maxPrsPerDay limits
+    # autonomous attempts, including attempts interrupted by GitHub API errors.
+    release_issue_claim || true
+    return 1
+  fi
+
+  log "Claimed issue #${issue_num} atomically (${CURRENT_CLAIM_REF})"
+  return 0
+}
+
+claim_autonomous_issue() {
+  local issue_num="$1"
+
+  # Win the issue race before reserving a daily slot. Otherwise sibling workers
+  # selecting the same loop:auto issue could consume multiple slots.
+  if ! create_issue_claim_ref "$issue_num"; then
+    return 1
+  fi
+  if ! reserve_pr_budget; then
+    log "Autonomous PR budget unavailable after claiming #${issue_num}; releasing issue claim"
+    release_issue_claim || true
+    return 1
+  fi
+  if ! mark_issue_processing "$issue_num"; then
+    release_issue_claim || true
+    return 1
+  fi
+
+  log "Claimed autonomous issue #${issue_num} atomically (${CURRENT_CLAIM_REF})"
   return 0
 }
 
@@ -765,6 +836,7 @@ claim_issue() {
 # ---------------------------------------------------------------------------
 process_issue() {
   local issue_json="$1"
+  local uses_auto_budget="${2:-false}"
   local issue_num issue_title issue_body branch_name
 
   issue_num=$(echo "$issue_json" | jq -r '.number')
@@ -776,8 +848,17 @@ process_issue() {
   PR_EXECUTIVE_SUMMARY=""
   log "Processing issue #${issue_num}: ${issue_title}"
 
-  # Claim the issue
-  if ! claim_issue "$issue_num"; then
+  # Manual issues bypass maxPrsPerDay. Only loop:auto issues reserve an
+  # autonomous daily slot after winning the atomic issue claim.
+  if [[ "$uses_auto_budget" == "true" ]]; then
+    claim_autonomous_issue "$issue_num" || {
+      log "Could not claim autonomous issue #${issue_num}, skipping"
+      release_issue_claim || true
+      CURRENT_ISSUE=""
+      CURRENT_ISSUE_CONTEXT=""
+      return 1
+    }
+  elif ! claim_issue "$issue_num"; then
     log "Could not claim issue #${issue_num}, skipping"
     release_issue_claim || true
     CURRENT_ISSUE=""
@@ -2094,27 +2175,10 @@ ${CRITIC_FEEDBACK}"; then
 }
 
 # ---------------------------------------------------------------------------
-# Guardrail: cap new-issue PRs per UTC day (revisions are always allowed).
-# GitHub ref creation is atomic, repository-shared, and restart-safe. A worker
-# reserves one slot before claiming new work; sibling workers cannot reserve the
-# same slot even when they poll simultaneously.
+# Guardrail: cap autonomous loop:auto PR attempts per UTC day. Manual issues and
+# revisions always bypass this cap. GitHub ref creation is atomic,
+# repository-shared, and restart-safe across sibling workers.
 # ---------------------------------------------------------------------------
-count_remote_worker_prs_today() {
-  local day pr_json
-  day=$(date -u +%Y-%m-%d)
-  pr_json=$(gh pr list \
-    --repo "$REPO_SLUG" \
-    --state all \
-    --limit 100 \
-    --json createdAt,headRefName 2>/dev/null) || return 1
-  printf '%s' "$pr_json" | jq --arg day "$day" '
-    [ .[]
-      | select(.headRefName | startswith("squad/"))
-      | select(.createdAt | startswith($day))
-    ] | length
-  '
-}
-
 budget_ref_prefix() {
   printf 'heads/squad-budget/%s\n' "$(date -u +%Y-%m-%d)"
 }
@@ -2128,27 +2192,20 @@ count_budget_reservations() {
 pr_budget_remaining() {
   local cap="${LOOP_MAX_PRS_PER_DAY:-0}"
   [[ "$cap" -le 0 ]] 2>/dev/null && return 0
-  local remote_count reservation_count used
-  if ! remote_count=$(count_remote_worker_prs_today); then
-    log_error "Could not verify repository-wide daily PR budget — idling fail-closed"
-    return 1
-  fi
+  local reservation_count
   if ! reservation_count=$(count_budget_reservations); then
-    log_error "Could not verify repository-wide daily PR reservations — idling fail-closed"
+    log_error "Could not verify repository-wide autonomous PR reservations — idling fail-closed"
     return 1
   fi
-  used="$remote_count"
-  [[ "$reservation_count" -gt "$used" ]] && used="$reservation_count"
-  [[ "$used" -lt "$cap" ]]
+  [[ "$reservation_count" -lt "$cap" ]]
 }
 
 reserve_pr_budget() {
   local cap="${LOOP_MAX_PRS_PER_DAY:-0}"
   [[ "$cap" -le 0 ]] 2>/dev/null && return 0
-  local remote_count reservation_count default_sha slot ref
-  remote_count=$(count_remote_worker_prs_today) || return 1
+  local reservation_count default_sha slot ref
   reservation_count=$(count_budget_reservations) || return 1
-  if [[ "$remote_count" -ge "$cap" || "$reservation_count" -ge "$cap" ]]; then
+  if [[ "$reservation_count" -ge "$cap" ]]; then
     return 1
   fi
 
@@ -2157,16 +2214,16 @@ reserve_pr_budget() {
     return 1
   }
 
-  for ((slot = remote_count + 1; slot <= cap; slot++)); do
+  for ((slot = 1; slot <= cap; slot++)); do
     ref="refs/heads/squad-budget/$(date -u +%Y-%m-%d)/slot-${slot}"
     if gh api --method POST "repos/${REPO_SLUG}/git/refs" \
       -f ref="$ref" -f sha="$default_sha" >/dev/null 2>&1; then
-      log "Reserved repository-wide PR budget slot ${slot}/${cap}: ${ref}"
+      log "Reserved repository-wide autonomous PR budget slot ${slot}/${cap}: ${ref}"
       return 0
     fi
 
-    # A sibling may have won this exact slot. Continue only when the ref now
-    # exists; any other API failure is an infrastructure error and fails closed.
+    # A sibling may have won this exact slot. Continue to the next slot only
+    # when this ref now exists; any other API failure fails closed.
     if gh api "repos/${REPO_SLUG}/git/ref/${ref#refs/}" >/dev/null 2>&1; then
       continue
     fi
@@ -2368,6 +2425,7 @@ main() {
     # Revisions take priority over new issues
     local issue_json=""
     local is_revision=false
+    local is_auto_issue=false
 
     issue_json=$(find_revision_issue)
     if [[ -n "$issue_json" ]] && [[ "$issue_json" != "null" ]]; then
@@ -2388,15 +2446,14 @@ main() {
       continue
     fi
 
-    # Guardrail: new issues respect the daily PR cap; revisions are always allowed.
-    if [[ "$is_revision" != "true" ]] && ! pr_budget_remaining; then
-      log "Daily PR budget reached (${LOOP_MAX_PRS_PER_DAY}) — idling new work (revisions still run)"
-      sleep "$POLL_INTERVAL"
-      continue
+    if [[ "$is_revision" != "true" ]] && is_autonomous_issue "$issue_json"; then
+      is_auto_issue=true
     fi
 
-    if [[ "$is_revision" != "true" ]] && ! reserve_pr_budget; then
-      log "Could not reserve daily PR budget — another worker may have claimed the final slot"
+    # Only loop:auto work is budgeted. Human-created squad issues and revision
+    # requests remain immediately eligible even when autonomous slots are full.
+    if [[ "$is_auto_issue" == "true" ]] && ! pr_budget_remaining; then
+      log "Autonomous PR budget reached (${LOOP_MAX_PRS_PER_DAY}) — idling loop:auto work (manual issues and revisions still run)"
       sleep "$POLL_INTERVAL"
       continue
     fi
@@ -2405,7 +2462,7 @@ main() {
     if [[ "$is_revision" == "true" ]]; then
       process_revision "$issue_json" || true
     else
-      process_issue "$issue_json" || true
+      process_issue "$issue_json" "$is_auto_issue" || true
     fi
 
     # Brief pause between issues to avoid hammering the API

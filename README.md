@@ -58,7 +58,7 @@ The operational layer that keeps quality high and blast radius small:
 | **Atomic claims** | A Git ref (`squad-claims/issue-N`) is created atomically before the visible `squad:processing` label; only one worker wins |
 | **Independent critic** | A second Copilot session — optionally running a different model — reviews the diff *without* the implementer's context |
 | **Verify hook** | Runs your own test suite or a custom script before publication; failures trigger bounded correction and then a flagged draft |
-| **PR budget / draft safety** | `maxPrsPerDay` caps daily output; `maxOpenAutoIssues` caps the self-generated work queue |
+| **Autonomous budget / draft safety** | `maxPrsPerDay` caps daily `loop:auto` PR attempts; manual issues and revisions bypass it |
 | **Credential isolation** | OS permissions protect publisher credentials; a native guard protects the model-token process tree and strips secrets from child tools |
 
 ---
@@ -134,8 +134,9 @@ Edit `repos.json` — one entry per worker:
 
 This is Hangar's **recommended guarded starter profile**, not the raw compatibility defaults:
 it enables automatic verification, the independent critic, full Squad implementation, and a
-two-PR daily safety cap. The [configuration reference](#reposjson-fields) lists the fallback
-defaults used when fields are omitted.
+two-PR daily safety cap for autonomous `loop:auto` work. Human-created `squad` issues do not
+consume that budget. The [configuration reference](#reposjson-fields) lists the fallback defaults
+used when fields are omitted.
 
 ### 4. Initialize Squad in the target repository
 
@@ -264,13 +265,15 @@ cycle and each operational branch. They are collapsed by default to keep the REA
 flowchart TD
     Wake([Worker wakes for a poll cycle]) --> Revision{Revision issue waiting?}
     Revision -->|yes| ClaimRevision[Atomically claim issue ref<br/>checkout existing PR branch]
-    Revision -->|no| NewIssue{Queued squad issue waiting?}
+    Revision -->|no| NewIssue{Queued squad issue waiting?<br/>manual first}
 
-    NewIssue -->|yes| Budget{Daily new-PR budget available?}
+    NewIssue -->|yes| AutoIssue{Issue has loop:auto?}
     NewIssue -->|no| Autonomous{Autonomous mode enabled?}
-    Budget -->|no| Idle[Idle; revisions remain eligible]
-    Budget -->|yes| Reserve[Atomically reserve repository budget slot]
-    Reserve --> ClaimNew[Atomically claim issue ref<br/>create squad issue branch]
+    AutoIssue -->|no; manual| ClaimManual[Atomically claim manual issue ref]
+    AutoIssue -->|yes| Budget{Autonomous PR budget available?}
+    Budget -->|no| Idle[Idle loop:auto work;<br/>manual issues and revisions remain eligible]
+    Budget -->|yes| ClaimAuto[Atomically claim loop:auto issue ref]
+    ClaimAuto --> Reserve[Atomically reserve autonomous budget slot]
 
     Autonomous -->|no| Idle
     Autonomous -->|yes| AutoCapacity{Budget and auto-issue capacity available?}
@@ -279,7 +282,8 @@ flowchart TD
     Generate --> Wake
 
     ClaimRevision --> Implement[Run Copilot or Squad implementation]
-    ClaimNew --> Implement
+    ClaimManual --> Implement
+    Reserve --> Implement
     Implement --> VerifyState{Verification state?}
     VerifyState -->|disabled| CriticState{Independent critic enabled?}
     VerifyState -->|unavailable| Draft[Publish a flagged draft PR]
@@ -421,19 +425,19 @@ sequenceDiagram
 </details>
 
 <details>
-<summary><b>Scenario F — Daily budget exhausted: idle without blocking revisions</b></summary>
+<summary><b>Scenario F — Autonomous budget exhausted: manual work remains eligible</b></summary>
 
 ```mermaid
 sequenceDiagram
     participant Worker as "Hangar worker"
     participant GitHub as "GitHub"
 
-    Worker->>GitHub: Check revision queue first
-    GitHub-->>Worker: No revision waiting
-    Worker->>GitHub: Read repository PR count and budget refs
-    GitHub-->>Worker: Daily new-PR cap reached
-    Worker-->>Worker: Idle until the next poll interval
-    Note over Worker,GitHub: Revision issues bypass the new-PR budget cap
+    Worker->>GitHub: Check revision queue, then manual squad issues
+    GitHub-->>Worker: Generated issue found after manual and revision queues are empty
+    Worker->>GitHub: Read autonomous budget refs
+    GitHub-->>Worker: Daily autonomous cap reached
+    Worker-->>Worker: Idle autonomous work until the next poll interval
+    Note over Worker,GitHub: Manual squad issues and revisions bypass the cap
 ```
 
 </details>
@@ -506,7 +510,7 @@ sequenceDiagram
 | `loop.criticModel` | same as `model` | Separate model for the critic pass |
 | `loop.verify` | `"off"` | `"off"` \| `"auto"` \| `"<cmd>"` \| `".loop/verify.sh"` |
 | `loop.maxRetries` | `2` | Self-correction attempts per quality gate failure |
-| `loop.maxPrsPerDay` | `0` (off) | Repository-wide daily PR cap shared by workers watching that repository |
+| `loop.maxPrsPerDay` | `0` (off) | Repository-wide daily cap for `loop:auto` PR attempts; manual issues and revisions bypass it |
 | `loop.maxOpenAutoIssues` | `3` | Concurrent self-generated issue cap |
 | `loop.goalFile` | `"auto"` | Goal source for autonomous planning; discovers `.loop/GOAL.md`, `BACKLOG.md`, or `.squad/GOAL.md` |
 | `loop.workScope` | `"all"` | `"all"` \| `"green-fit"` (only deterministic, well-scoped autonomous tasks) |
@@ -576,7 +580,8 @@ threat model.
 - One repository per worker container. Multi-repo workers are not yet supported.
 - The Cockpit dashboard is functional but minimal.
 - Autonomous mode (`loop.autonomous: true`) is experimental. Enable only with a low
-  `maxPrsPerDay` and review every PR manually until you trust the output quality.
+  `maxPrsPerDay` and review every PR manually until you trust the output quality. The cap applies
+  only to `loop:auto` work; human-created `squad` issues remain immediately eligible.
 - Requires an active GitHub Copilot subscription. Copilot models are not self-hosted; all
   inference happens via GitHub's Copilot API.
 
