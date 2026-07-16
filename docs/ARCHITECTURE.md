@@ -267,6 +267,8 @@ publisher user. Keep it disabled unless needed and protect it with VPN/reverse-p
 
 Where N is the worker index (0-based). All bindings are loopback-only unless overridden with
 `TTYD_PORT_WN` / `SSH_PORT_WN` environment variables in `.env.workers`.
+Interactive SSH, ttyd, and preview use separate `INTERACTIVE_*_BIND_ADDRESS` settings so direct
+LAN SSH access does not require exposing the browser terminal or preview server.
 
 ### Outbound connections (from worker containers)
 

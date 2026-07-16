@@ -524,7 +524,9 @@ sequenceDiagram
 | `INTERACTIVE_REPO_URL` | empty | Optional repository cloned into the trusted workstation |
 | `INTERACTIVE_WORKSPACE_NAME` | `repo` | Workspace directory below `/workspace` |
 | `INTERACTIVE_ENABLE_TTYD` | `false` | Enable the writable browser terminal |
-| `INTERACTIVE_BIND_ADDRESS` | `127.0.0.1` | Bind address for interactive SSH, ttyd, and preview ports |
+| `INTERACTIVE_TTYD_BIND_ADDRESS` | `127.0.0.1` | Bind address for the browser terminal |
+| `INTERACTIVE_SSH_BIND_ADDRESS` | `127.0.0.1` | Bind address for interactive SSH; set to a trusted LAN IP only when direct access is required |
+| `INTERACTIVE_PREVIEW_BIND_ADDRESS` | `127.0.0.1` | Bind address for the preview server |
 | `INTERACTIVE_TTYD_PORT` | `7681` | Interactive browser-terminal port |
 | `INTERACTIVE_SSH_PORT` | `2222` | Interactive SSH port |
 | `INTERACTIVE_VOLUME_PREFIX` | `hangar` | Stable volume prefix; keep unchanged when upgrading existing data |

@@ -27,3 +27,8 @@ container images are distributed at this time.
   Compose project while retaining separate service-level trust boundaries and persistent volumes.
 - Scoped `maxPrsPerDay` to autonomous `loop:auto` work. Human-created `squad` issues and revisions
   now bypass the autonomous budget and manual issues are selected before generated work.
+- Split interactive SSH, ttyd, and preview bind addresses so operators can expose only the
+  service they explicitly need.
+- Existing operators who set `INTERACTIVE_BIND_ADDRESS` must replace it with the corresponding
+  `INTERACTIVE_SSH_BIND_ADDRESS`, `INTERACTIVE_TTYD_BIND_ADDRESS`, and/or
+  `INTERACTIVE_PREVIEW_BIND_ADDRESS` settings.
