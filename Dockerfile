@@ -59,6 +59,7 @@ RUN useradd -m -s /bin/bash copilot \
 RUN mkdir -p /run/sshd \
   && sed -i 's/#PasswordAuthentication yes/PasswordAuthentication no/' /etc/ssh/sshd_config \
   && sed -i 's/#PubkeyAuthentication yes/PubkeyAuthentication yes/' /etc/ssh/sshd_config \
+  && printf '%s\n' 'PermitRootLogin no' 'KbdInteractiveAuthentication no' >> /etc/ssh/sshd_config \
   && echo 'AllowUsers copilot' >> /etc/ssh/sshd_config
 
 # tmux config (mobile-friendly)
