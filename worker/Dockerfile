@@ -3,7 +3,7 @@
 # Autonomous worker that picks up GitHub issues and implements them through
 # full Squad or restricted plain Copilot sessions. Includes ttyd + SSH for monitoring.
 # =============================================================================
-FROM debian:12-slim AS credential-guard-builder
+FROM debian:13-slim AS credential-guard-builder
 
 RUN apt-get update && apt-get install -y --no-install-recommends gcc libc6-dev \
   && rm -rf /var/lib/apt/lists/*
@@ -14,7 +14,7 @@ RUN gcc -O2 -Wall -Wextra -Werror \
   && gcc -O2 -Wall -Wextra -Werror -shared -fPIC \
   -o /libcredential-guard.so /tmp/credential-guard-preload.c
 
-FROM debian:12-slim
+FROM debian:13-slim
 
 ARG NODE_VERSION=22
 
