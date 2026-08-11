@@ -218,6 +218,8 @@ pass "manual issues are classified and selected ahead of autonomous work"
 
 GH_TEST_MODE=count
 GH_CALLS_FILE="${TMP_ROOT}/gh-calls"
+PUBLICATION_ISSUE_JSON='{"state":"OPEN","labels":[{"name":"squad"},{"name":"squad:processing"}]}'
+PUBLICATION_CLAIM_PRESENT=true
 AUTO_ISSUES_JSON='[
   {"number":41,"labels":[{"name":"squad"},{"name":"loop:auto"}]},
   {"number":42,"labels":[{"name":"squad"},{"name":"loop:auto"},{"name":"squad:processing"}]},
@@ -228,6 +230,15 @@ gh() {
   case "$GH_TEST_MODE" in
     count) printf '%s\n' "$AUTO_ISSUES_JSON" ;;
     lifecycle) printf '%s\n' "$*" >> "$GH_CALLS_FILE" ;;
+    publication)
+      if [[ "$1" == "issue" && "$2" == "view" ]]; then
+        printf '%s\n' "$PUBLICATION_ISSUE_JSON"
+      elif [[ "$1" == "api" && "$PUBLICATION_CLAIM_PRESENT" == "true" ]]; then
+        return 0
+      else
+        return 1
+      fi
+      ;;
     *) return 1 ;;
   esac
 }
@@ -254,8 +265,71 @@ assert_contains "$gh_calls" "Remove the \`squad:done\` label to retry" "failed a
 finalize_no_commit_issue 45 false 0
 gh_calls=$(cat "$GH_CALLS_FILE")
 assert_not_contains "$gh_calls" "issue close 45" "manual no-commit issue remains open"
+
+GH_TEST_MODE=publication
+CURRENT_CLAIM_REF="refs/heads/squad-claims/issue-42"
+run_and_capture_rc publication_rc publication_authorized 42 squad squad:processing
+assert_eq "0" "$publication_rc" "active issue publication authorization"
+
+PUBLICATION_ISSUE_JSON='{"state":"CLOSED","labels":[{"name":"squad"},{"name":"squad:processing"}]}'
+run_and_capture_rc publication_rc publication_authorized 42 squad squad:processing
+assert_eq "1" "$publication_rc" "closed issue publication authorization"
+assert_contains "$PUBLICATION_BLOCK_REASON" "not OPEN" "closed issue publication reason"
+
+PUBLICATION_ISSUE_JSON='{"state":"OPEN","labels":[{"name":"squad"}]}'
+run_and_capture_rc publication_rc publication_authorized 42 squad squad:processing
+assert_eq "1" "$publication_rc" "revoked processing label authorization"
+assert_contains "$PUBLICATION_BLOCK_REASON" "squad:processing" "missing active label reason"
+
+PUBLICATION_ISSUE_JSON='{"state":"OPEN","labels":[{"name":"squad"},{"name":"squad:processing"}]}'
+PUBLICATION_CLAIM_PRESENT=false
+run_and_capture_rc publication_rc publication_authorized 42 squad squad:processing
+assert_eq "1" "$publication_rc" "deleted claim publication authorization"
+assert_contains "$PUBLICATION_BLOCK_REASON" "claim no longer exists" "deleted claim reason"
+
+PUBLICATION_CLAIM_PRESENT=true
+PUBLICATION_ISSUE_JSON='{"state":"OPEN","labels":[{"name":"squad:revision"},{"name":"squad:processing"}]}'
+run_and_capture_rc publication_rc publication_authorized 42 squad squad:revision squad:processing
+assert_eq "1" "$publication_rc" "revision without squad routing authorization"
+assert_contains "$PUBLICATION_BLOCK_REASON" "required label squad is absent" "revision routing label reason"
+CURRENT_CLAIM_REF=""
 unset -f gh
-pass "zero-commit lifecycle closes only successful autonomous no-ops"
+pass "zero-commit and terminal publication lifecycles fail closed"
+
+PR_EXECUTIVE_SUMMARY='## Problem
+The feature was missing. Fixes #9.
+
+## Root Cause
+The prior path was incomplete.
+
+## Solution
+Implemented the bounded behavior.
+
+## Testing
+Focused tests passed.
+
+## Future Work
+None.'
+GATE_NOTE=""
+change_summary=$(cd "$REPO_DIR" && generate_change_summary "origin/main")
+pr_body=$(build_pr_body 42 "Synthetic feature" $'## Request\n\nCloses #8.' "$change_summary")
+assert_eq "## Problem" "${pr_body%%$'\n'*}" "PR body begins with Problem heading"
+assert_eq "5" "$(printf '%s\n' "$pr_body" | grep -c '^## ')" "PR body top-level heading count"
+assert_eq "## Problem|## Root Cause|## Solution|## Testing|## Future Work" \
+  "$(printf '%s\n' "$pr_body" | grep '^## ' | paste -sd'|' -)" "PR body heading order"
+assert_contains "$pr_body" "Closes #42" "PR body closes only current issue"
+assert_not_contains "$pr_body" "Fixes #9" "agent summary closing reference neutralized"
+assert_not_contains "$pr_body" "Closes #8" "issue context closing reference neutralized"
+assert_not_contains "$pr_body" "See issue" "PR body is standalone"
+assert_contains "$change_summary" "1 commit(s) on this branch" "change summary reports bounded commit count"
+assert_not_contains "$change_summary" "- change" "change summary omits raw commit subjects"
+
+PR_EXECUTIVE_SUMMARY=""
+fallback_body=$(build_pr_body 42 "Synthetic feature" "Acceptance criteria are explicit." "$change_summary")
+assert_contains "$fallback_body" "Synthetic feature is the approved work request" "fallback names requested work"
+assert_contains "$fallback_body" "> Acceptance criteria are explicit." "fallback embeds bounded request context"
+assert_eq "5" "$(printf '%s\n' "$fallback_body" | grep -c '^## ')" "fallback heading count"
+pass "PR body fallback stays canonical, standalone, and single-issue"
 
 generator_source=$(declare -f generate_work)
 assert_contains "$generator_source" "authorization contract" "planner treats goal source as authoritative"
@@ -628,10 +702,16 @@ pass "PR lookup distinguishes API failure, identity mismatch, and confirmed stat
 revision_source=$(sed -n '/^process_revision()/,/^}/p' "$WORKER_SCRIPT")
 gate_line=$(printf '%s\n' "$revision_source" | grep -n 'run_quality_gates' | head -1 | cut -d: -f1)
 draft_line=$(printf '%s\n' "$revision_source" | grep -n 'ensure_pr_is_draft' | head -1 | cut -d: -f1)
+publication_line=$(printf '%s\n' "$revision_source" | grep -n 'publication_authorized' | head -1 | cut -d: -f1)
 push_line=$(printf '%s\n' "$revision_source" | grep -n 'git push --force-with-lease' | head -1 | cut -d: -f1)
-[[ -n "$gate_line" && -n "$draft_line" && -n "$push_line" ]] || fail "revision ordering markers missing"
-[[ "$gate_line" -lt "$draft_line" && "$draft_line" -lt "$push_line" ]] || fail "revision must gate, then draft, then push"
-pass "revision gates and draft downgrade precede force-push"
+[[ -n "$gate_line" && -n "$draft_line" && -n "$publication_line" && -n "$push_line" ]] \
+  || fail "revision ordering markers missing"
+[[ "$gate_line" -lt "$draft_line" && "$draft_line" -lt "$publication_line" \
+  && "$publication_line" -lt "$push_line" ]] || fail "revision must gate, draft, authorize, then push"
+# shellcheck disable=SC2016 # Assertion intentionally matches literal shell source.
+assert_contains "$revision_source" 'publication_authorized "$issue_num" "squad" "squad:revision" "squad:processing"' \
+  "revision publication requires routing and revision labels"
+pass "revision gates, draft downgrade, and terminal authorization precede force-push"
 
 issue_source=$(sed -n '/^process_issue()/,/^}/p' "$WORKER_SCRIPT")
 assert_contains "$issue_source" 'PR_EXECUTIVE_SUMMARY=""' "new issue resets PR summary"
@@ -647,6 +727,13 @@ zero_commit_guard_line=$(printf '%s\n' "$issue_source" | grep -n 'if \[\[ "$comm
 [[ "$residual_commit_line" -lt "$zero_commit_guard_line" ]] \
   || fail "residual edits must be committed before the final zero-commit guard"
 pass "initial work commits residual edits after earlier Squad commits"
+
+initial_publication_line=$(printf '%s\n' "$issue_source" | grep -n 'publication_authorized' | head -1 | cut -d: -f1)
+initial_push_line=$(printf '%s\n' "$issue_source" | grep -n 'git push origin' | head -1 | cut -d: -f1)
+[[ -n "$initial_publication_line" && -n "$initial_push_line" \
+  && "$initial_publication_line" -lt "$initial_push_line" ]] \
+  || fail "initial publication authorization must precede push"
+pass "initial publication revalidates issue state and claim before push"
 
 # shellcheck disable=SC2016 # Assertion intentionally matches literal shell source.
 assert_contains "$revision_source" '--force-with-lease=refs/heads/${branch_name}:${revision_remote_oid}' "revision uses immutable explicit lease"
