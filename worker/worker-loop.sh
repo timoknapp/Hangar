@@ -635,6 +635,33 @@ is_autonomous_issue() {
   issue_has_label "$1" "loop:auto"
 }
 
+# A successful autonomous session with no diff is a terminal no-op, not a
+# retryable worker failure. Close that generated issue so it cannot occupy the
+# autonomous queue indefinitely. Other zero-commit outcomes remain visible for
+# operator review, but squad:done keeps them out of worker selection.
+finalize_no_commit_issue() {
+  local issue_num="$1"
+  local is_autonomous="${2:-false}"
+  local session_exit="${3:-1}"
+
+  gh issue edit "$issue_num" --repo "$REPO_SLUG" \
+    --remove-label "squad:processing" --add-label "squad:done" 2>/dev/null || true
+
+  if [[ "$is_autonomous" == "true" && "$session_exit" -eq 0 ]]; then
+    gh issue comment "$issue_num" --repo "$REPO_SLUG" \
+      --body "ℹ️ Squad Worker ${WORKER_ID} completed successfully without producing commits. The requested change is already satisfied or no product change is warranted, so this autonomous issue is being closed as not planned. Reopen it and remove the \`squad:done\` label only if implementation is still required." 2>/dev/null || true
+    if gh issue close "$issue_num" --repo "$REPO_SLUG" --reason "not planned" >/dev/null 2>&1; then
+      log "Closed no-op autonomous issue #${issue_num} as not planned"
+    else
+      log_error "Could not close no-op autonomous issue #${issue_num}; squad:done excludes it from the open-issue cap"
+    fi
+    return 0
+  fi
+
+  gh issue comment "$issue_num" --repo "$REPO_SLUG" \
+    --body "❌ Squad Worker ${WORKER_ID} failed: Copilot session produced no commits. Issue marked done to prevent a retry loop. Remove the \`squad:done\` label to retry." 2>/dev/null || true
+}
+
 # Prefer human-created work over loop:auto work. This prevents an exhausted
 # autonomous budget from hiding a manual issue behind an older generated issue.
 select_next_unclaimed_issue() {
@@ -1082,11 +1109,7 @@ Auto-committed by Squad Worker ${WORKER_ID} (copilot left changes unstaged)." 2>
 
   if [[ "$commit_count" -eq 0 ]]; then
     log "No commits produced for issue #${issue_num}"
-    # Mark as done to prevent infinite retry loops
-    gh issue edit "$issue_num" --repo "$REPO_SLUG" \
-      --remove-label "squad:processing" --add-label "squad:done" 2>/dev/null || true
-    gh issue comment "$issue_num" --repo "$REPO_SLUG" \
-      --body "❌ Squad Worker ${WORKER_ID} failed: Copilot session produced no commits. Issue marked done to prevent retry loop. Re-add the \`squad\` label to retry." 2>/dev/null || true
+    finalize_no_commit_issue "$issue_num" "$uses_auto_budget" "$copilot_exit"
     # Local cleanup
     cd "$WORKSPACE_DIR" 2>/dev/null || true
     git checkout "$DEFAULT_BRANCH" 2>/dev/null || true
@@ -1702,7 +1725,7 @@ cleanup_issue() {
   gh issue edit "$issue_num" --repo "$REPO_SLUG" \
     --remove-label "squad:processing" --add-label "squad:done" 2>/dev/null || true
   gh issue comment "$issue_num" --repo "$REPO_SLUG" \
-    --body "❌ Squad Worker ${WORKER_ID} failed: ${reason}. Issue marked done to prevent retry loop. Re-add the \`squad\` label to retry." 2>/dev/null || true
+    --body "❌ Squad Worker ${WORKER_ID} failed: ${reason}. Issue marked done to prevent a retry loop. Remove the \`squad:done\` label to retry." 2>/dev/null || true
 
   # Local git cleanup
   cd "$WORKSPACE_DIR" 2>/dev/null || true
@@ -2269,7 +2292,14 @@ resolve_goal_source() {
 }
 
 count_open_auto_issues() {
-  gh issue list --repo "$REPO_SLUG" --label "squad" --label "loop:auto" --state open --json number --jq 'length' 2>/dev/null
+  local issues
+  issues=$(gh issue list --repo "$REPO_SLUG" --label "squad" --label "loop:auto" \
+    --state open --limit 100 --json number,labels 2>/dev/null) || return 1
+  printf '%s\n' "$issues" | jq -r '
+    [.[] | select(
+      (((.labels // []) | map(.name) | index("squad:done")) == null)
+    )] | length
+  '
 }
 
 resolve_work_scope_context() {
@@ -2329,7 +2359,14 @@ ${goal_content:-No goal file was provided; inspect the repository conservatively
 ## Work scope
 ${scope_instr:-Any well-scoped task aligned with the configured goal source is eligible.}
 
-Propose exactly ONE concrete, well-scoped task a coding agent can finish in a single PR.
+## Selection rules
+- Treat the goal source as an authorization contract, not as inspiration. Follow its ordering, approval, dependency, and stop rules exactly.
+- Never invent, extrapolate, broaden, or restate work that the goal source does not explicitly make actionable.
+- Completed, closed, superseded, deferred, non-actionable, and dependency-blocked entries are ineligible.
+- If the next eligible entry already references an existing issue or pull request, output NO_TASK. Existing work must be routed through that artifact rather than duplicated.
+- If no explicitly authorized, eligible, and unlinked task exists, output NO_TASK.
+
+Otherwise, propose exactly ONE concrete, well-scoped task a coding agent can finish in a single PR.
 Output ONLY this format, nothing before or after:
 TITLE: <one-line imperative title>
 BODY:
