@@ -216,6 +216,53 @@ selected_issue=$(select_next_unclaimed_issue "$manual_blocked_queue")
 assert_eq "41" "$(printf '%s' "$selected_issue" | jq -r '.number')" "loop:auto fallback when no manual issue is eligible"
 pass "manual issues are classified and selected ahead of autonomous work"
 
+GH_TEST_MODE=count
+GH_CALLS_FILE="${TMP_ROOT}/gh-calls"
+AUTO_ISSUES_JSON='[
+  {"number":41,"labels":[{"name":"squad"},{"name":"loop:auto"}]},
+  {"number":42,"labels":[{"name":"squad"},{"name":"loop:auto"},{"name":"squad:processing"}]},
+  {"number":43,"labels":[{"name":"squad"},{"name":"loop:auto"},{"name":"squad:done"}]}
+]'
+# shellcheck disable=SC2329 # Invoked indirectly by sourced worker functions.
+gh() {
+  case "$GH_TEST_MODE" in
+    count) printf '%s\n' "$AUTO_ISSUES_JSON" ;;
+    lifecycle) printf '%s\n' "$*" >> "$GH_CALLS_FILE" ;;
+    *) return 1 ;;
+  esac
+}
+
+open_auto_count=$(count_open_auto_issues)
+assert_eq "2" "$open_auto_count" "open autonomous issue cap excludes squad:done"
+pass "terminal autonomous issues do not consume open-issue capacity"
+
+GH_TEST_MODE=lifecycle
+: > "$GH_CALLS_FILE"
+finalize_no_commit_issue 43 true 0
+gh_calls=$(cat "$GH_CALLS_FILE")
+assert_contains "$gh_calls" "issue close 43" "successful autonomous no-op closes issue"
+assert_contains "$gh_calls" "--reason not planned" "successful autonomous no-op close reason"
+assert_contains "$gh_calls" "remove the \`squad:done\` label" "autonomous no-op retry guidance"
+
+: > "$GH_CALLS_FILE"
+finalize_no_commit_issue 44 true 7
+gh_calls=$(cat "$GH_CALLS_FILE")
+assert_not_contains "$gh_calls" "issue close 44" "failed autonomous session remains inspectable"
+assert_contains "$gh_calls" "Remove the \`squad:done\` label to retry" "failed autonomous retry guidance"
+
+: > "$GH_CALLS_FILE"
+finalize_no_commit_issue 45 false 0
+gh_calls=$(cat "$GH_CALLS_FILE")
+assert_not_contains "$gh_calls" "issue close 45" "manual no-commit issue remains open"
+unset -f gh
+pass "zero-commit lifecycle closes only successful autonomous no-ops"
+
+generator_source=$(declare -f generate_work)
+assert_contains "$generator_source" "authorization contract" "planner treats goal source as authoritative"
+assert_contains "$generator_source" "already references an existing issue" "planner rejects duplicate linked work"
+assert_contains "$generator_source" "explicitly authorized, eligible, and unlinked" "planner fails closed without eligible work"
+pass "autonomous planner does not invent or duplicate governed backlog work"
+
 rubric=$(resolve_critic_rubric)
 assert_contains "$rubric" "REPO_RULE_SENTINEL" "repo-aware rubric includes repository instructions"
 pass "repo-aware rubric includes bounded repository context"
