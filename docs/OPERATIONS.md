@@ -444,6 +444,9 @@ Missing/duplicate/pending required checks, API permission failures, local gate e
 An empty list safely leaves work draft-only; do not interpret inaccessible branch-protection APIs as no required checks.
 When an App can read Actions but not check rollups, explicitly select `checkBackend: "actions"` and configure
 `requiredWorkflows` (workflow display names) in addition to `requiredChecks` (job names).
+PR metadata resolves the number using `gh pr view --json number`, then obtains base/head SHAs via
+`gh api repos/OWNER/REPO/pulls/NUMBER`; this avoids the unsupported `--json baseRefOid` field in older gh releases.
+Actions mode never requests GraphQL `statusCheckRollup`. Checks mode remains explicit and fails on unavailable rollup access.
 This path filters exact head, branch and pull-request event, uses the latest run/attempt per workflow,
 and fails closed on denied APIs or responses exceeding its explicit 100-run/job bounds.
 All emitted workflows/jobs remain blocking unless an exact administrative workflow is explicitly excluded.

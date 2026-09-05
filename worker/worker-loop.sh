@@ -1912,14 +1912,33 @@ remote_checks_ready() {
   ' <<<"$snapshot" >/dev/null
 }
 
+read_pr_metadata() {
+  local number metadata
+  # baseRefOid is not a supported --json field in older deployed gh releases.
+  # Resolve only the stable PR number with gh, then read immutable SHAs via REST.
+  number=$(gh pr view "$1" --repo "$REPO_SLUG" --json number --jq .number) || return 1
+  [[ "$number" =~ ^[1-9][0-9]*$ ]] || return 1
+  metadata=$(gh api "repos/${REPO_SLUG}/pulls/${number}") || return 1
+  jq -e '(.state=="open" or .state=="closed") and (.draft|type)=="boolean" and
+    (.merged|type)=="boolean" and (.head.sha|test("^[0-9a-f]{40}$")) and
+    (.base.sha|test("^[0-9a-f]{40}$")) and (.body==null or (.body|type)=="string") and
+    (.mergeable==null or (.mergeable|type)=="boolean")' <<<"$metadata" >/dev/null || return 1
+  jq '{state:(if .merged then "MERGED" elif .state=="closed" then "CLOSED" else "OPEN" end),
+    isDraft:.draft,headRefOid:.head.sha,baseRefOid:.base.sha,body:(.body // ""),
+    mergeable:(if .mergeable==true then "MERGEABLE" elif .mergeable==false then "CONFLICTING" else "UNKNOWN" end)}' <<<"$metadata"
+}
+
 read_pr_snapshot() {
   local branch="$1" metadata runs jobs all_jobs='[]' run id attempt status conclusion name policy base
+  metadata=$(read_pr_metadata "$branch") || return 1
+  if [[ "$(jq -r .state <<<"$metadata")" == CLOSED || "$(jq -r .state <<<"$metadata")" == MERGED ]]; then
+    printf '%s\n' "$metadata"; return 0
+  fi
   if [[ "$LOOP_CHECK_BACKEND" == checks ]]; then
-    metadata=$(gh pr view "$branch" --repo "$REPO_SLUG" \
-      --json state,isDraft,headRefOid,baseRefOid,body,mergeable,statusCheckRollup) || return 1
-    if [[ "$(jq -r .state <<<"$metadata")" == CLOSED || "$(jq -r .state <<<"$metadata")" == MERGED ]]; then
-      printf '%s\n' "$metadata"; return 0
-    fi
+    local rollup
+    rollup=$(gh pr view "$branch" --repo "$REPO_SLUG" --json headRefOid,statusCheckRollup) || return 1
+    [[ "$(jq -er .headRefOid <<<"$rollup")" == "$(jq -er .headRefOid <<<"$metadata")" ]] || return 1
+    metadata=$(jq --argjson rollup "$rollup" '. + {statusCheckRollup:$rollup.statusCheckRollup}' <<<"$metadata") || return 1
     policy=$(resolve_check_policy "$(jq -er .baseRefOid <<<"$metadata")" "$(jq -er .headRefOid <<<"$metadata")") || return 1
     # Workflow names are not synthesized by the GraphQL backend.
     jq --argjson policy "$policy" '. + {checkPolicy:($policy + {requiredWorkflows:[]})}' <<<"$metadata"
@@ -1927,10 +1946,6 @@ read_pr_snapshot() {
   fi
   # Some publisher Apps can read Actions but not GraphQL check runs. Keep the
   # same exact-head semantics; no missing-permission shortcut to green.
-  metadata=$(gh pr view "$branch" --repo "$REPO_SLUG" --json state,isDraft,headRefOid,baseRefOid,body,mergeable) || return 1
-  if [[ "$(jq -r .state <<<"$metadata")" == CLOSED || "$(jq -r .state <<<"$metadata")" == MERGED ]]; then
-    printf '%s\n' "$metadata"; return 0
-  fi
   local head
   head=$(jq -er .headRefOid <<<"$metadata") || return 1
   base=$(jq -er .baseRefOid <<<"$metadata") || return 1

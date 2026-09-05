@@ -48,9 +48,18 @@ source "$SOURCE"
 trap - SIGINT SIGTERM
 cd "$WORKSPACE_DIR"
 gh() {
+  if [[ "$*" == *'--json'* && "$*" == *baseRefOid* ]]; then
+    echo 'Unknown JSON field: baseRefOid (deployed CLI compatibility fixture)' >&2; return 96
+  fi
   if [[ "$1 $2" == 'pr view' ]]; then
-    if [[ "$*" == *'--jq .isDraft'* ]]; then echo true; else cat "$FIXTURE/meta.json"; fi
+    if [[ "$*" == *'--json number'* ]]; then echo 7
+    elif [[ "$*" == *'--jq .isDraft'* ]]; then echo true; else cat "$FIXTURE/meta.json"; fi
     return
+  fi
+  if [[ "$1" == api && "$2" == */pulls/7 ]]; then
+    jq '{state:(if .state=="OPEN" then "open" else "closed" end),draft:.isDraft,
+      merged:(.state=="MERGED"),head:{sha:.headRefOid},base:{sha:.baseRefOid},body,
+      mergeable:(if .mergeable=="MERGEABLE" then true elif .mergeable=="CONFLICTING" then false else null end)}' "$FIXTURE/meta.json"; return
   fi
   if [[ "$*" == *'--method GET'* ]]; then cat "$FIXTURE/runs.json"; return; fi
   if [[ "$2" =~ /runs/([0-9]+)/attempts/([0-9]+)/jobs ]]; then
@@ -195,6 +204,22 @@ gh() {
         (root / 'meta.json').write_text(json.dumps(meta))
         call('snapshot=$(read_pr_snapshot feature); [[ "$(jq -r .state <<<"$snapshot")" == "' + state + '" ]]')
     passed('terminal PR metadata bypasses unavailable checks without calling Ready')
+
+    fixtures('success')
+    metadata = json.loads(call('read_pr_metadata feature').stdout)
+    assert metadata['baseRefOid'] == base and metadata['headRefOid'] == head
+    assert metadata['state'] == 'OPEN' and metadata['mergeable'] == 'MERGEABLE'
+    path = root / 'meta.json'
+    fixture = json.loads(path.read_text())
+    fixture.update(mergeable='UNKNOWN', body=None)
+    path.write_text(json.dumps(fixture))
+    metadata = json.loads(call('read_pr_metadata feature').stdout)
+    assert metadata['mergeable'] == 'UNKNOWN' and metadata['body'] == ''
+    passed('REST maps exact SHA/PR metadata without unsupported CLI baseRefOid field')
+    fixture['headRefOid'] = 'not-a-sha'
+    path.write_text(json.dumps(fixture))
+    call('read_pr_metadata feature', expected=1)
+    passed('invalid REST immutable head fails closed')
 
     fixtures('success')
     receipt = '''

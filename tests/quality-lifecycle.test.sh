@@ -215,12 +215,19 @@ release_owned_ref() { return 0; }
 gh() {
   printf '%s\n' "$*" >>"$GH_CALLS"
   if [[ "$1 $2" == 'issue view' ]]; then echo "$ISSUE"; return 0; fi
-  if [[ "$1" == api ]]; then echo "$REMOTE_OID"; return 0; fi
+  if [[ "$1" == api ]]; then
+    if [[ "$2" == */pulls/1 ]]; then
+      gh pr view fixture --json fixture | jq '{state:"open",draft:.isDraft,merged:false,
+        head:{sha:.headRefOid},base:{sha:.baseRefOid},body,mergeable:true}'
+    else echo "$REMOTE_OID"; fi
+    return 0
+  fi
   if [[ "$1 $2" == 'pr ready' ]]; then
     if [[ "$*" == *--undo* ]]; then REMOTE_DRAFT=true; else REMOTE_DRAFT=false; fi
     return 0
   fi
   if [[ "$1 $2" == 'pr view' ]]; then
+    if [[ "$*" == *'--json number'* ]]; then echo 1; return 0; fi
     if [[ "$*" == *'--jq .isDraft'* ]]; then echo "$REMOTE_DRAFT"; return 0; fi
     local checks="$CHECKS" head="$VERIFIED_HEAD" body="$FINAL_PR_BODY"
     if [[ "$PR_MODE" == pending ]]; then checks=$(jq '.statusCheckRollup[0].status="IN_PROGRESS"' <<<"$checks"); fi
@@ -311,7 +318,12 @@ ACTIONS_MODE=pass
 JOBS_REQUESTED="$TMP/jobs-requested"
 gh() {
   if [[ "$1 $2" == 'pr view' ]]; then
+    if [[ "$*" == *'--json number'* ]]; then echo 7; return 0; fi
     printf '{"state":"OPEN","isDraft":true,"headRefOid":"head-a","baseRefOid":"base-a","body":"body","mergeable":"MERGEABLE"}\n'
+    return 0
+  fi
+  if [[ "$1" == api && "$2" == */pulls/7 ]]; then
+    printf '{"state":"open","draft":true,"merged":false,"head":{"sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},"base":{"sha":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"},"body":"body","mergeable":true}\n'
     return 0
   fi
   if [[ "$*" == *'--method GET'* ]]; then
@@ -321,7 +333,7 @@ gh() {
       {"id":3,"workflow_id":2,"run_number":1,"run_attempt":1,"name":"Governance","head_sha":"head-a","head_branch":"feature","event":"pull_request","status":"completed","conclusion":"success"},
       {"id":4,"workflow_id":3,"run_number":1,"run_attempt":1,"name":"Other head","head_sha":"head-b","head_branch":"feature","event":"pull_request","status":"completed","conclusion":"failure"}]}'
     [[ "$ACTIONS_MODE" != missing ]] || data=$(jq '.workflow_runs |= map(select(.id != 3)) | .total_count=(.workflow_runs|length)' <<<"$data")
-    echo "$data"; return 0
+    jq '(.workflow_runs[] | select(.head_sha=="head-a") | .head_sha)="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"' <<<"$data"; return 0
   fi
   if [[ "$*" == *'/jobs?'* ]]; then
     [[ "$ACTIONS_MODE" != denied ]] || return 1
