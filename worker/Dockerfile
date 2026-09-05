@@ -7,9 +7,11 @@ FROM debian:13-slim AS credential-guard-builder
 
 RUN apt-get update && apt-get install -y --no-install-recommends gcc libc6-dev \
   && rm -rf /var/lib/apt/lists/*
+COPY agent-launch.c /tmp/agent-launch.c
 COPY credential-guard.c /tmp/credential-guard.c
 COPY credential-guard-preload.c /tmp/credential-guard-preload.c
-RUN gcc -O2 -Wall -Wextra -Werror \
+RUN gcc -O2 -Wall -Wextra -Werror -o /agent-launch /tmp/agent-launch.c \
+  && gcc -O2 -Wall -Wextra -Werror \
   -o /credential-guard /tmp/credential-guard.c \
   && gcc -O2 -Wall -Wextra -Werror -shared -fPIC \
   -o /libcredential-guard.so /tmp/credential-guard-preload.c
@@ -61,6 +63,7 @@ RUN echo "cache-bust=${CACHE_BUST}" \
 
 # Prevent same-user shell/subagent/MCP processes from reading the parent
 # Copilot credential through /proc/<pid>/environ.
+COPY --from=credential-guard-builder /agent-launch /usr/local/bin/agent-launch
 COPY --from=credential-guard-builder /credential-guard /usr/local/bin/credential-guard
 COPY --from=credential-guard-builder /libcredential-guard.so /usr/local/lib/libcredential-guard.so
 
@@ -79,6 +82,7 @@ RUN groupadd --system squad \
   && useradd -m -s /bin/bash -g squad copilot \
   && useradd -m -s /bin/bash -g squad squad-agent \
   && echo "copilot ALL=(squad-agent) NOPASSWD: /usr/bin/env" > /etc/sudoers.d/copilot \
+  && echo "copilot ALL=(root) NOPASSWD: /usr/local/bin/agent-launch" >> /etc/sudoers.d/copilot \
   && chmod 440 /etc/sudoers.d/copilot \
   && chmod 700 /home/copilot /home/squad-agent
 

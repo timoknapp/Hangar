@@ -109,6 +109,24 @@ HEADER
     LOOP_CRITIC_RUBRIC=$(jq -r --arg w "$WORKER_ID" '.[$w].loop.criticRubric // "auto"' "$REPOS_JSON")
     LOOP_IMPLEMENTER=$(jq -r --arg w "$WORKER_ID" '.[$w].loop.implementer // "plain"' "$REPOS_JSON")
 
+    local LOOP_REQUIRED_LABELS
+    LOOP_REQUIRED_LABELS=$(jq -c --arg w "$WORKER_ID" '.[$w].loop.requiredLabels // []' "$REPOS_JSON")
+    local LOOP_UNATTENDED_LABELS
+    LOOP_UNATTENDED_LABELS=$(jq -c --arg w "$WORKER_ID" '.[$w].loop.unattendedLabels // ["loop:auto"]' "$REPOS_JSON")
+    local LOOP_REQUIRED_CHECKS
+    LOOP_REQUIRED_CHECKS=$(jq -c --arg w "$WORKER_ID" '.[$w].loop.requiredChecks // []' "$REPOS_JSON")
+    local LOOP_MAX_ACTIVE_ISSUES
+    LOOP_MAX_ACTIVE_ISSUES=$(jq -r --arg w "$WORKER_ID" '.[$w].loop.maxActiveIssues // 0' "$REPOS_JSON")
+    local LOOP_MAX_TASK_SECONDS
+    LOOP_MAX_TASK_SECONDS=$(jq -r --arg w "$WORKER_ID" '.[$w].loop.maxTaskSeconds // 3600' "$REPOS_JSON")
+    local LOOP_MAX_REVIEW_BYTES
+    LOOP_MAX_REVIEW_BYTES=$(jq -r --arg w "$WORKER_ID" '.[$w].loop.maxReviewBytes // 262144' "$REPOS_JSON")
+    local LOOP_CHECK_BACKEND LOOP_REQUIRED_WORKFLOWS
+    LOOP_CHECK_BACKEND=$(jq -r --arg w "$WORKER_ID" '.[$w].loop.checkBackend // "checks"' "$REPOS_JSON")
+    LOOP_REQUIRED_WORKFLOWS=$(jq -c --arg w "$WORKER_ID" '.[$w].loop.requiredWorkflows // []' "$REPOS_JSON")
+    local LOOP_PROFILE_DIR
+    LOOP_PROFILE_DIR=$(jq -r --arg w "$WORKER_ID" '.[$w].loop.profileDir // ""' "$REPOS_JSON")
+
     cat >> "$COMPOSE_FILE" <<EOF
   squad-${WORKER_ID}:
     build:
@@ -144,6 +162,15 @@ HEADER
       - $(yaml_quote "LOOP_WORK_SCOPE=${LOOP_WORK_SCOPE}")
       - $(yaml_quote "LOOP_CRITIC_RUBRIC=${LOOP_CRITIC_RUBRIC}")
       - $(yaml_quote "LOOP_IMPLEMENTER=${LOOP_IMPLEMENTER}")
+      - $(yaml_quote "LOOP_REQUIRED_LABELS=${LOOP_REQUIRED_LABELS}")
+      - $(yaml_quote "LOOP_UNATTENDED_LABELS=${LOOP_UNATTENDED_LABELS}")
+      - $(yaml_quote "LOOP_REQUIRED_CHECKS=${LOOP_REQUIRED_CHECKS}")
+      - $(yaml_quote "LOOP_MAX_ACTIVE_ISSUES=${LOOP_MAX_ACTIVE_ISSUES}")
+      - $(yaml_quote "LOOP_MAX_TASK_SECONDS=${LOOP_MAX_TASK_SECONDS}")
+      - $(yaml_quote "LOOP_MAX_REVIEW_BYTES=${LOOP_MAX_REVIEW_BYTES}")
+      - $(yaml_quote "LOOP_CHECK_BACKEND=${LOOP_CHECK_BACKEND}")
+      - $(yaml_quote "LOOP_REQUIRED_WORKFLOWS=${LOOP_REQUIRED_WORKFLOWS}")
+      - $(yaml_quote "LOOP_PROFILE_DIR=${LOOP_PROFILE_DIR}")
     ports:
       - $(yaml_quote "${bind_address_value}:\${TTYD_PORT_W${NUM}:-${TTYD_PORT}}:8080")
       - $(yaml_quote "${bind_address_value}:\${SSH_PORT_W${NUM}:-${SSH_PORT}}:22")
@@ -155,6 +182,11 @@ HEADER
       - ./repos.json:/etc/squad/repos.json:ro
 
 EOF
+
+    if [[ -n "$LOOP_PROFILE_DIR" ]]; then
+      [[ "$LOOP_PROFILE_DIR" == /* && -d "$LOOP_PROFILE_DIR" ]] || { echo "Invalid operator profile directory" >&2; return 1; }
+      printf '      - %s\n\n' "$(yaml_quote "${LOOP_PROFILE_DIR}:${LOOP_PROFILE_DIR}:ro")" >> "$COMPOSE_FILE"
+    fi
 
     VOLUMES="${VOLUMES}  squad-${WORKER_ID}-workspace:\n"
     VOLUMES="${VOLUMES}  squad-${WORKER_ID}-copilot-data:\n"

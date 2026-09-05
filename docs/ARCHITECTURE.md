@@ -24,7 +24,7 @@
 Hangar turns a server (or development machine) into an autonomous PR factory. Each worker
 container runs a tight polling loop: find an unclaimed issue → claim it atomically → implement
 it with Copilot → run the configured verification gate → optionally run a fresh critic → open a
-ready PR or clearly flagged draft.
+draft PR followed by exact-head remote checks before Ready.
 A human reviews and merges.
 Docker manages the trusted interactive workstation and all guarded workers as services in one
 `hangar-fleet` Compose project; shared stack ownership does not imply a shared trust boundary.
@@ -145,8 +145,12 @@ OS/process isolation and defense in depth, not a hardware or VM security boundar
 3. Full Squad sessions deny `git push` and `git send-pack`, disable the built-in GitHub MCP, and
   receive no repository-authorized token. They retain shell, external web reads, and explicitly
   attached repository MCP servers so they can still perform capable implementation work.
-4. The `copilot` sudo rule is tightly scoped: `copilot ALL=(squad-agent) NOPASSWD: /usr/bin/env`
-   — it can only drop to `squad-agent` via `env`, not elevate to root.
+4. Publisher utility reads/cleanup use sudo-to-`squad-agent` `env` as before.
+   Workloads use the root-owned, non-setuid `agent-launch` via a publisher-only sudo rule.
+   The fixed helper drops the bounding set while CAP_SETPCAP is available, clears environment/FDs,
+   sets no-new-privileges, drops groups/GID/UID and all capabilities, verifies zero authority, then
+   executes only the fixed shell or credential guard as `squad-agent`.
+   Coding code never runs as root and has no sudo authority; missing helper capability fails closed.
 
 ---
 
@@ -160,24 +164,19 @@ entrypoint.sh (root)
   → exec worker-loop.sh as copilot user
 
 worker-loop.sh (copilot user)
-  ┌── runtime preflight: smoke-test Copilot auth
-  │
-  └─ polling loop (every POLL_INTERVAL seconds):
-       1. prioritize open issues carrying `squad:revision`, then regular `squad` issues
-       2. for each eligible issue:
-          a. atomically create refs/heads/squad-claims/issue-<number>
-          b. add the visible squad:processing label and worker comment
-            c. create branch squad/<issue-number>-<slug>
-            d. reset branch to DEFAULT_BRANCH HEAD
-            e. sudo -n -u squad-agent: run Copilot implementation session
-               (implementer=plain → restricted shell-less session)
-            (implementer=squad → full Squad custom-agent multi-agent session)
-            f. capture residual edits in a local commit
-            g. run verify hook (or classify disabled/unavailable verification)
-            h. [optional] run an attested critic session only after verification
-            i. re-verify any critic-driven correction
-            j. publisher pushes and creates a ready PR on pass or draft on unresolved gates
-            k. release the atomic claim ref and update labels/comments
+  → production-path true canary (auth smoke is separate and optional)
+  → resume publisher-private pending receipt before admitting any new task
+  → fresh issue approval/body check; owner-bound atomic issue claim and optional WIP1
+  → optional unattended attempt reservation (same path for revisions)
+  → clean workspace, fresh fetched pinned base, exact checkout and ancestry checks
+  → clean-base verification before the single implementer
+  → local commits + untracked summary handoff (no destructive cleanup)
+  → verification and full pinned diff/body critic, shared correction/time ceiling
+  → publisher lease-push + draft; persist exact-head evidence
+  → normal polling: current-head required checks + body/base/approval/ownership
+  → Ready for human review, never merge; WIP1 remains until close/merge
+  → failure: squad:failed, revision trigger consumed, work/evidence retained
+
 ```
 
 ### Implementer modes
@@ -194,8 +193,12 @@ worker-loop.sh (copilot user)
 ### Atomic claims
 
 The worker creates `refs/heads/squad-claims/issue-<number>` through GitHub's ref API before any
-visible label mutation. Ref creation is atomic: one worker wins and siblings skip. The winner then
-adds `squad:processing`; labels are operator-visible state, not the concurrency primitive.
+visible label mutation.
+Each claim targets a unique metadata commit recording worker, issue and nonce, not the shared base SHA.
+Ref creation is atomic; release uses an expected-OID push lease, so a replacement owner cannot be deleted.
+Optional WIP1 uses `squad-claims/wip` and persists through failed/pending/ready work.
+The issue claim serializes a same-issue repair; orphaned claims require operator recovery.
+Labels are visible state, not the concurrency primitive.
 
 ### Independent critic
 
@@ -204,9 +207,12 @@ session runs against the diff. The critic session:
 
 - starts with no knowledge of the implementation session's chat history
 - optionally uses a different model (`loop.criticModel`)
-- reads the diff from a workspace-scoped file (not via network)
+- reads the complete pinned merge-base diff and actual final PR body from a workspace-scoped file
 - reads rubric/issue/diff from a temporary workspace file and must echo a nonce found only there
 - outputs exactly one attested `APPROVE` or `REQUEST_CHANGES` verdict
+- binds base/head/diff/body/input hashes and rejects input tampering or HEAD drift
+- blocks oversized input explicitly, never silently reviews a prefix
+- reads active rules from trusted base; proposed rule changes are review data
 
 If the critic returns `REQUEST_CHANGES` and retries remain (`loop.maxRetries`), the implementation
 session is retried with the critic's feedback as additional context.
@@ -222,17 +228,24 @@ session is retried with the critic's feedback as additional context.
 | `".loop/verify.sh"` | Runs the specified script at the workspace root |
 | `"<command>"` | Runs the literal command string |
 
-Verify runs as `squad-agent` inside the workspace. A non-zero exit code triggers a retry up to
-`maxRetries`; unresolved gates create or update a clearly flagged draft PR for human review.
+Verify runs through the same zero-capability launcher as the startup canary.
+Infrastructure start errors, timeouts, HEAD/tracked-tree mutations and profile exit 78 block without code repair.
+Only code failures after a successful clean-base check may consume the shared `maxRetries` correction allowance.
+Unresolved local gates retain local work and block publication; failed remote checks retain a draft.
+All implementation, correction, verification and pending-check time shares `maxTaskSeconds`.
 
 ### Budget and draft safety
 
-- `maxPrsPerDay` — caps only autonomous `loop:auto` PR attempts. It is enforced repository-wide
-  through atomic `squad-budget/YYYY-MM-DD/slot-N` Git refs shared by sibling workers and durable
-  across restarts. Human-created `squad` issues and revisions bypass the cap. Manual issues are
-  selected ahead of generated work so an exhausted autonomous budget cannot hide them.
-- `maxOpenAutoIssues` — in `loop.autonomous` mode, limits concurrent self-generated issues so
-  the board doesn't fill up with stale work
+- `maxPrsPerDay` caps attempts matching configured `unattendedLabels` (default `loop:auto`), including revisions.
+  Reservation refs remain durable across failures/restarts; they count attempts, not accepted PRs.
+- `maxOpenAutoIssues` only caps self-generated `loop:auto` issues.
+- `requiredLabels` applies identically at admission, publication and Ready; labels never enlarge issue-body scope.
+- `requiredChecks` lists exact required check names; absent policy, missing permissions or missing local reviewer evidence means draft-only.
+- WIP1 covers repository-wide worker PRs and failed/pending work, not just self-generated tasks.
+- No endpoint atomically combines Ready with SHA preconditions: checks are read immediately before and after promotion;
+  concurrent drift triggers downgrade and blocks. Human merge protection remains an independent responsibility.
+
+See [operations](OPERATIONS.md#13-quality-policy-and-recovery) for configuration and recovery.
 
 ---
 

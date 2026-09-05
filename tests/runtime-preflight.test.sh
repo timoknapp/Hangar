@@ -16,7 +16,7 @@ token_before=$(docker exec -u copilot "$container" cat /home/copilot/.github-app
 docker exec -u squad-agent "$container" ln -sf \
   /home/copilot/.github-app-token "$workspace/.squad/pr-summary.md"
 docker exec -u copilot "$container" bash -c \
-  "source /home/copilot/.workspace_env; source /home/copilot/worker-loop.sh; PR_EXECUTIVE_SUMMARY=stale; prepare_pr_summary; test -z \"\$PR_EXECUTIVE_SUMMARY\"; test ! -e '$workspace/.squad/pr-summary.md'"
+  "source /home/copilot/.workspace_env; source /home/copilot/worker-loop.sh; PR_EXECUTIVE_SUMMARY=stale; rc=0; prepare_pr_summary || rc=\$?; test \"\$rc\" = 1; test -z \"\$PR_EXECUTIVE_SUMMARY\"; test ! -e '$workspace/.squad/pr-summary.md'"
 token_after=$(docker exec -u copilot "$container" cat /home/copilot/.github-app-token)
 test "$token_before" = "$token_after"
 

@@ -18,6 +18,7 @@
 10. [Rebuilding worker images](#10-rebuilding-worker-images)
 11. [Debugging worker sessions](#11-debugging-worker-sessions)
 12. [Monitoring and alerting](#12-monitoring-and-alerting)
+13. [Quality policy and recovery](#13-quality-policy-and-recovery)
 
 ---
 
@@ -26,7 +27,7 @@
 The normal operating pattern once Hangar is running:
 
 1. **Open an issue** on the repository assigned to a worker.
-2. **Apply the `squad` label** to put it on the worker queue.
+2. **Apply the `squad` label** and any configured required approval labels to put it on the worker queue.
 3. **Wait** — the worker claims the issue within one `POLL_INTERVAL` (default: 60 seconds).
 4. **Watch progress** via `docker logs -f squad-worker-1` or the Cockpit terminal.
 5. **Review the PR** when it appears — treat it like any externally submitted patch.
@@ -418,3 +419,106 @@ gh pr list --repo your-org/your-repo \
 ---
 
 > Back to [README](../README.md) · [Install](INSTALL.md) · [Architecture](ARCHITECTURE.md)
+
+## 13. Quality policy and recovery
+
+### Operator-owned repository policy
+
+Configure identical gate/admission fields for every worker sharing a repository.
+`requiredLabels` is an array of extra approval labels; its default is empty for generic compatibility.
+Labels are necessary controls, not proof of who approved or permission to expand a design-only issue into product implementation.
+Removing approval, closing the issue, changing its title/body or replacing/deleting a claim cancels publication/readiness.
+`unattendedLabels` defaults to `["loop:auto"]`; this label means self-generated work, not all unattended work.
+Set it to `["squad"]` to conservatively budget all queued work without changing existing producers.
+Otherwise route scheduled/dispatched producers through the same queue and apply a shared configured unattended label.
+`maxPrsPerDay` counts attempts (including revisions and failures), not finished PRs.
+
+`maxActiveIssues: 1` uses one atomic repository WIP ref, retained across draft, ready and failed work until the issue closes.
+New tasks wait behind existing failed/processing/pending issues and worker PRs.
+Explicit revisions can repair the same WIP issue; WIP does not authorize stealing its active issue claim.
+Do not delete `squad-claims/` or `squad-budget/` refs during general branch cleanup.
+
+`requiredChecks` lists exact remote check names selected by the operator from authoritative workflows.
+The list must include applicable scope/approval and UI-evidence checks, not just compilation.
+Missing/duplicate/pending required checks, API permission failures, local gate evidence gaps and base/head/body drift prevent Ready.
+An empty list safely leaves work draft-only; do not interpret inaccessible branch-protection APIs as no required checks.
+When an App can read Actions but not check rollups, explicitly select `checkBackend: "actions"` and configure
+`requiredWorkflows` (workflow display names) in addition to `requiredChecks` (job names).
+This path filters exact head, branch and pull-request event, uses the latest run/attempt per workflow,
+and fails closed on denied APIs or responses exceeding its explicit 100-run/job bounds.
+Path-conditional workflows may be absent; if observed, their failures still block.
+Projects must include applicable conditional-presence policy in their trusted local verifier or universal governance workflow.
+Do not label workflow names as job names or assume an absent applicable workflow means N/A.
+No merge is performed.
+
+Ready is a persisted `promoting` phase: queued checks from `ready_for_review` wait in the normal loop, not an undo/redo loop.
+A task explicitly requesting draft remains `waiting-human`, not failed; its WIP persists.
+A closed/merged pending PR releases only its owned coordination refs without attempting a draft mutation.
+
+`maxRetries` is one shared code-correction allowance, not a fresh allowance per nested gate.
+`maxTaskSeconds` defaults to 3600 and covers initial implementation, verification, review, corrections and pending remote checks.
+Set an explicit longer deadline for slow CI rather than relying on repeated outer attempts.
+Infrastructure failures and profile exit 78 (policy/evidence blocked) never request code corrections.
+Baseline failures block before implementation instead of inviting unrelated test repairs.
+
+### Optional private instance profile
+
+Set `profileDir` to an absolute operator-owned directory, mounted read-only into the worker at the same path.
+The directory and its ancestors must be root-owned and not group/world-writable; profile files are root-owned 0444 or 0644.
+Never put it in the checkout or let an issue select a publisher command.
+The fixed interface is:
+
+- `implementer.md`: bounded supplemental instructions for one implementer.
+- `reviewer.md`: bounded supplemental reviewer requirements.
+- `review-context.txt`: one relative trusted-base rule path per line; blank/comment lines ignored.
+- `review-assets.txt`: optional relative image-deliverable directories, one per line with a trailing slash.
+  Blank/comment lines are ignored; absent file means no image-link rewriting.
+  This is data only, not an upload command or proof of image authenticity.
+- `verify.sh`: invoked as `bash <profile>/verify.sh <pinned-base-sha> <current-head-sha>` ONLY through the credential-free coding boundary.
+  Helpers inside the profile execute as coding code too, never as publisher.
+  Exit 78 means policy/evidence blocked; any applicable UI check must fail closed when real reviewer evidence is absent.
+
+### Summary and screenshot handoff
+
+The implementer writes untracked `.squad/pr-summary.md` with exactly `Problem`, `Root Cause`, `Solution`, `Testing`, `Future Work` H2 headings.
+Corrections regenerate the cumulative summary; the publisher removes scratch before committing/verifying.
+The critic reviews the actual final body alongside the complete base-pinned diff and active trusted rules.
+Nested `### UI evidence` inside Testing survives; top-level extra sections are not an alternative handoff.
+Non-UI work states a scope-based `UI: N/A`; do not invent screenshots.
+The private profile selects any explicitly approved image-deliverable directories; no repository-specific path ships in Hangar.
+Matching relative PNG links become immutable repository blob links bound to the final head; other links are unchanged.
+Record capture source commit plus a source-tree hash excluding only approved image assets to avoid self-referential commit hashes.
+A Markdown image or agent-writable manifest does not prove image authenticity, accessibility or visual review.
+The instance verifier/required remote checks must supply those project-specific proofs before Ready; otherwise keep UI work blocked.
+Hangar does not upload images publicly or bypass repository asset policy.
+
+### Evidence and explicit recovery
+
+Publisher state defaults to `/home/copilot/.local/share/hangar-loop` (private 0700 directory, persisted copilot-data volume).
+Logs retain bounded redacted tails with phase/base/head/exit; per-file evidence and receipts are 0600 and outside the checkout.
+A single `pending.json` lets normal polling continue exact-head checks after restart, without another service or model run.
+Failed tasks get `squad:failed`, never `squad:done`, and consume `squad:revision`.
+Re-add revision only after reviewing the failure and explicitly recovering its workspace/branch; labels do not fix dirty files or stale ancestry.
+No automatic reset, clean, branch deletion, rebase or force-unlock occurs.
+
+Before recovering an orphaned claim: stop/identify its owning worker; archive its private state and local branch/worktree; inspect its nonce/OID and issue state.
+Use an expected-OID lease if releasing a verified abandoned claim, never an unconditional REST deletion of a possibly replaced owner.
+A failed terminal GitHub write retains ownership and stops admission rather than repeatedly rerunning the implementer.
+If a prepared base no longer matches remote, explicitly rebase/reconcile and rerun verification/review; old evidence cannot be reused.
+Local unpublished revision commits differing from the remote are deliberately blocked from implicit replacement.
+
+### Mandatory rollout proof for launcher changes
+
+The compiled root-owned `agent-launch` is not setuid and only the publisher can invoke its sudo rule.
+It needs CAP_SETPCAP long enough to empty the bounding set, plus the existing fixed UID/GID drop authority.
+It does not pass root/capabilities, inherited environment, arbitrary file descriptors or publisher credentials to AI/test code.
+Do not “repair” a missing capability by deleting no-new-privileges or bounding-set enforcement.
+Prove the candidate image in isolation first:
+
+```bash
+WORKER_IMAGE=hangar-worker:ci bash tests/agent-launch.container.sh
+```
+
+This disposable, network-disabled test mounts no real credentials and exercises the exact production `run_agent_command` path.
+Local mocked tests and C compilation are not substitutes.
+The optional Copilot auth preflight separately probes the configured reviewer model; an auth/nonce response is not substantive code review.

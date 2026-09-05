@@ -5,7 +5,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 WORKER="$ROOT/worker/worker-loop.sh"
 
-revision=$(sed -n '/^process_revision()/,/^}/p' "$WORKER")
+revision=$(sed -n '/^publish_task()/,/^}/p' "$WORKER")
 issue=$(sed -n '/^process_issue()/,/^}/p' "$WORKER")
 
 lookup_line=$(printf '%s\n' "$revision" | grep -n 'lookup_pr_url_for_branch' | head -1 | cut -d: -f1)
@@ -18,8 +18,8 @@ test -n "$push_line"
 test "$lookup_line" -lt "$draft_line"
 test "$draft_line" -lt "$push_line"
 
-printf '%s\n' "$issue" | grep -q 'Could not determine existing PR state safely'
-printf '%s\n' "$revision" | grep -q 'Could not re-read revision PR state safely'
+printf '%s\n' "$issue" | grep -q 'publish_task'
+printf '%s\n' "$revision" | grep -q 'PR lookup unavailable'
 if printf '%s\n' "$revision" | grep -q 'git push --force origin'; then
 	echo "destructive revision force-push fallback found" >&2
 	exit 1

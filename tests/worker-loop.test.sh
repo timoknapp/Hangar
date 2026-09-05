@@ -76,6 +76,11 @@ git -C "$REPO_DIR" add example.txt
 git -C "$REPO_DIR" commit -qm "base"
 git -C "$REPO_DIR" branch -M main
 git -C "$REPO_DIR" update-ref refs/remotes/origin/main "$(git -C "$REPO_DIR" rev-parse main)"
+printf '%s\n' 'REPO_RULE_SENTINEL' > "$REPO_DIR/.github/copilot-instructions.md"
+printf '%s\n' 'GREEN_CAPABILITY_SENTINEL' > "$REPO_DIR/.squad/roster.md"
+git -C "$REPO_DIR" add .github .squad
+git -C "$REPO_DIR" commit -qm "trusted policies"
+git -C "$REPO_DIR" update-ref refs/remotes/origin/main "$(git -C "$REPO_DIR" rev-parse main)"
 git -C "$REPO_DIR" checkout -qb feature
 printf '%s\n' 'changed' > "$REPO_DIR/example.txt"
 git -C "$REPO_DIR" commit -qam "change"
@@ -127,6 +132,12 @@ source "$WORKER_SCRIPT"
 CURRENT_ISSUE=42
 CURRENT_TOKEN="test-token"
 branch_name="feature"
+TASK_BASE_SHA=$(git -C "$REPO_DIR" rev-parse origin/main)
+TASK_BRANCH=feature
+TASK_START_HEAD="$TASK_BASE_SHA"
+issue_title="Synthetic feature"
+issue_body="Implement the explicit request."
+BASE_VERIFY_OK=true
 
 # Local tests do not have the image's squad-agent account. Preserve path
 # confinement while replacing only the user switch.
@@ -177,9 +188,9 @@ assert_not_contains " ${squad_policy_args} " " --deny-tool=shell " "Squad must n
 assert_not_contains " ${squad_policy_args} " " --deny-tool=url " "Squad must not receive a blanket URL denial"
 assert_not_contains "$squad_policy_args" "--deny-tool=shell(gh:*)" "Squad may perform read-only gh discovery without an auth credential"
 squad_capabilities=$(implementer_capability_instructions)
-assert_contains "$squad_capabilities" 'real Squad Team Mode session' "Squad prompt identifies the real orchestrator"
+assert_contains "$squad_capabilities" 'one implementer' "Squad limits implementation cast"
 # shellcheck disable=SC2016 # Backticks are literal prompt text.
-assert_contains "$squad_capabilities" 'Use the `task` tool' "Squad prompt requires real delegation"
+assert_contains "$squad_capabilities" 'one independent reviewer' "Outer independent review is not simulated"
 assert_contains "$squad_capabilities" 'project builds/tests' "Squad prompt exposes local verification tools"
 assert_contains "$squad_capabilities" 'repository-configured MCP servers' "Squad prompt exposes workspace MCPs"
 configure_workspace_mcp_args
@@ -218,8 +229,10 @@ pass "manual issues are classified and selected ahead of autonomous work"
 
 GH_TEST_MODE=count
 GH_CALLS_FILE="${TMP_ROOT}/gh-calls"
-PUBLICATION_ISSUE_JSON='{"state":"OPEN","labels":[{"name":"squad"},{"name":"squad:processing"}]}'
+PUBLICATION_ISSUE_JSON='{"title":"test","body":"test","state":"OPEN","labels":[{"name":"squad"},{"name":"squad:processing"}]}'
 PUBLICATION_CLAIM_PRESENT=true
+ISSUE_CONTRACT_HASH=$(issue_contract_hash "$PUBLICATION_ISSUE_JSON")
+CURRENT_CLAIM_OID=test-owner
 AUTO_ISSUES_JSON='[
   {"number":41,"labels":[{"name":"squad"},{"name":"loop:auto"}]},
   {"number":42,"labels":[{"name":"squad"},{"name":"loop:auto"},{"name":"squad:processing"}]},
@@ -234,7 +247,7 @@ gh() {
       if [[ "$1" == "issue" && "$2" == "view" ]]; then
         printf '%s\n' "$PUBLICATION_ISSUE_JSON"
       elif [[ "$1" == "api" && "$PUBLICATION_CLAIM_PRESENT" == "true" ]]; then
-        return 0
+        echo test-owner; return 0
       else
         return 1
       fi
@@ -250,21 +263,9 @@ pass "terminal autonomous issues do not consume open-issue capacity"
 GH_TEST_MODE=lifecycle
 : > "$GH_CALLS_FILE"
 finalize_no_commit_issue 43 true 0
-gh_calls=$(cat "$GH_CALLS_FILE")
-assert_contains "$gh_calls" "issue close 43" "successful autonomous no-op closes issue"
-assert_contains "$gh_calls" "--reason not planned" "successful autonomous no-op close reason"
-assert_contains "$gh_calls" "remove the \`squad:done\` label" "autonomous no-op retry guidance"
-
-: > "$GH_CALLS_FILE"
-finalize_no_commit_issue 44 true 7
-gh_calls=$(cat "$GH_CALLS_FILE")
-assert_not_contains "$gh_calls" "issue close 44" "failed autonomous session remains inspectable"
-assert_contains "$gh_calls" "Remove the \`squad:done\` label to retry" "failed autonomous retry guidance"
-
-: > "$GH_CALLS_FILE"
-finalize_no_commit_issue 45 false 0
-gh_calls=$(cat "$GH_CALLS_FILE")
-assert_not_contains "$gh_calls" "issue close 45" "manual no-commit issue remains open"
+assert_not_contains "$(cat "$GH_CALLS_FILE")" "issue close" "no-op does not infer acceptance"
+assert_contains "$(cat "$GH_CALLS_FILE")" "--add-label squad:failed" "no-op visibly blocked"
+assert_not_contains "$(cat "$GH_CALLS_FILE")" "--add-label squad:done" "failure is not done"
 
 GH_TEST_MODE=publication
 CURRENT_CLAIM_REF="refs/heads/squad-claims/issue-42"
@@ -276,22 +277,22 @@ run_and_capture_rc publication_rc publication_authorized 42 squad squad:processi
 assert_eq "1" "$publication_rc" "closed issue publication authorization"
 assert_contains "$PUBLICATION_BLOCK_REASON" "not OPEN" "closed issue publication reason"
 
-PUBLICATION_ISSUE_JSON='{"state":"OPEN","labels":[{"name":"squad"}]}'
+PUBLICATION_ISSUE_JSON='{"title":"test","body":"test","state":"OPEN","labels":[{"name":"squad"}]}'
 run_and_capture_rc publication_rc publication_authorized 42 squad squad:processing
 assert_eq "1" "$publication_rc" "revoked processing label authorization"
 assert_contains "$PUBLICATION_BLOCK_REASON" "squad:processing" "missing active label reason"
 
-PUBLICATION_ISSUE_JSON='{"state":"OPEN","labels":[{"name":"squad"},{"name":"squad:processing"}]}'
+PUBLICATION_ISSUE_JSON='{"title":"test","body":"test","state":"OPEN","labels":[{"name":"squad"},{"name":"squad:processing"}]}'
 PUBLICATION_CLAIM_PRESENT=false
 run_and_capture_rc publication_rc publication_authorized 42 squad squad:processing
 assert_eq "1" "$publication_rc" "deleted claim publication authorization"
-assert_contains "$PUBLICATION_BLOCK_REASON" "claim no longer exists" "deleted claim reason"
+assert_contains "$PUBLICATION_BLOCK_REASON" "ownership changed" "deleted claim reason"
 
 PUBLICATION_CLAIM_PRESENT=true
-PUBLICATION_ISSUE_JSON='{"state":"OPEN","labels":[{"name":"squad:revision"},{"name":"squad:processing"}]}'
+PUBLICATION_ISSUE_JSON='{"title":"test","body":"test","state":"OPEN","labels":[{"name":"squad:revision"},{"name":"squad:processing"}]}'
 run_and_capture_rc publication_rc publication_authorized 42 squad squad:revision squad:processing
 assert_eq "1" "$publication_rc" "revision without squad routing authorization"
-assert_contains "$PUBLICATION_BLOCK_REASON" "required label squad is absent" "revision routing label reason"
+assert_contains "$PUBLICATION_BLOCK_REASON" "approval or bounded issue contract changed" "revision routing label reason"
 CURRENT_CLAIM_REF=""
 unset -f gh
 pass "zero-commit and terminal publication lifecycles fail closed"
@@ -337,6 +338,7 @@ assert_contains "$generator_source" "already references an existing issue" "plan
 assert_contains "$generator_source" "explicitly authorized, eligible, and unlinked" "planner fails closed without eligible work"
 pass "autonomous planner does not invent or duplicate governed backlog work"
 
+cd "$REPO_DIR"
 rubric=$(resolve_critic_rubric)
 assert_contains "$rubric" "REPO_RULE_SENTINEL" "repo-aware rubric includes repository instructions"
 pass "repo-aware rubric includes bounded repository context"
@@ -432,6 +434,18 @@ if find "$REPO_DIR" -maxdepth 1 -name '.critic-input.*.md' -print -quit | grep -
 fi
 unset FAKE_ARGS_FILE CRITIC_INPUT_NONCE_OVERRIDE
 
+PR_EXECUTIVE_SUMMARY='## Problem
+Requested behavior.
+## Root Cause
+Known fixture cause.
+## Solution
+Bounded implementation.
+## Testing
+Fixture checks; UI: N/A — no UI changes.
+## Future Work
+None.'
+FINAL_PR_BODY="$PR_EXECUTIVE_SUMMARY"
+
 # Replace external gate actions with deterministic in-process fakes.
 VERIFY_CALLS=0
 CRITIC_CALLS=0
@@ -488,6 +502,7 @@ CRITIC_MODE=approve
 VERIFY_CALLS=0
 CRITIC_CALLS=0
 FIX_CALLS=0
+CORRECTIONS_USED=0
 run_and_capture_rc gate_rc run_quality_gates
 assert_eq "1" "$gate_rc" "exhausted verify gate result"
 assert_eq "true" "$PR_DRAFT" "exhausted verify gate draft flag"
@@ -501,9 +516,10 @@ CRITIC_MODE=request-once
 VERIFY_CALLS=0
 CRITIC_CALLS=0
 FIX_CALLS=0
+CORRECTIONS_USED=0
 run_and_capture_rc gate_rc run_quality_gates
 assert_eq "0" "$gate_rc" "critic correction gate result"
-assert_eq "false" "$PR_DRAFT" "successful critic correction draft flag"
+assert_eq "true" "$PR_DRAFT" "successful critic correction draft flag"
 assert_eq "2" "$VERIFY_CALLS" "initial and post-critic verification"
 assert_eq "2" "$CRITIC_CALLS" "critic re-review count"
 assert_eq "1" "$FIX_CALLS" "critic correction count"
@@ -515,6 +531,7 @@ CRITIC_MODE=request-once
 VERIFY_CALLS=0
 CRITIC_CALLS=0
 FIX_CALLS=0
+CORRECTIONS_USED=0
 run_and_capture_rc gate_rc run_quality_gates
 assert_eq "1" "$gate_rc" "failed post-critic verification result"
 assert_eq "true" "$PR_DRAFT" "failed post-critic verification draft flag"
@@ -527,13 +544,13 @@ CRITIC_MODE=infrastructure
 VERIFY_CALLS=0
 CRITIC_CALLS=0
 FIX_CALLS=0
+CORRECTIONS_USED=0
 run_and_capture_rc gate_rc run_quality_gates
 assert_eq "1" "$gate_rc" "critic infrastructure exhaustion result"
 assert_eq "true" "$PR_DRAFT" "critic infrastructure exhaustion draft flag"
-assert_eq "3" "$CRITIC_CALLS" "initial critic plus two infrastructure retries"
+assert_eq "1" "$CRITIC_CALLS" "critic infra stops without outer retries"
 assert_eq "0" "$FIX_CALLS" "infrastructure failures must not trigger code changes"
-assert_contains "$GATE_NOTE" "Independent critic unavailable" "critic infrastructure draft note"
-assert_contains "$GATE_NOTE" "no valid critic verdict" "critic infrastructure missing-verdict disclosure"
+assert_contains "$GATE_NOTE" "forced critic infrastructure" "critic infrastructure retained"
 pass "critic infrastructure exhaustion is explicit and fails closed"
 
 LOOP_VERIFY=off
@@ -543,11 +560,12 @@ VERIFY_MODE=off
 VERIFY_CALLS=0
 CRITIC_CALLS=0
 FIX_CALLS=0
+CORRECTIONS_USED=0
 run_and_capture_rc gate_rc run_quality_gates
 assert_eq "0" "$gate_rc" "legacy gates disabled result"
-assert_eq "false" "$PR_DRAFT" "legacy gates disabled draft flag"
+assert_eq "true" "$PR_DRAFT" "legacy gates disabled draft flag"
 assert_eq "0" "$FIX_CALLS" "legacy gates disabled corrections"
-pass "legacy workers remain non-draft when all gates are explicitly off"
+pass "disabled gates are draft-only, never prematurely ready"
 
 set +e
 (CURRENT_ISSUE=""; CURRENT_CLAIM_REF=""; fatal_agent_isolation_breach >/dev/null 2>&1)
@@ -556,9 +574,9 @@ set -e
 assert_eq "70" "$isolation_rc" "fatal agent-isolation exit code"
 runner_source="$(sed -n '/^run_agent_copilot()/,/^}/p' "$WORKER_SCRIPT") $(declare -f run_agent_command)"
 assert_contains "$runner_source" 'terminate_agent_processes || fatal_agent_isolation_breach' "runners enforce fatal cleanup failure"
-assert_contains "$runner_source" '/usr/local/bin/credential-guard' "Copilot runner protects its credential-bearing process environment"
+assert_contains "$runner_source" '/usr/local/bin/agent-launch' "Copilot runner protects its credential-bearing process environment"
 # shellcheck disable=SC2016 # Assertion intentionally matches literal shell source.
-assert_contains "$runner_source" 'printf '\''%s'\'' "$token" | sudo' "Copilot token is delivered through an anonymous pipe"
+assert_contains "$runner_source" 'printf '\''%s'\'' "$token" | timeout' "Copilot token is delivered through an anonymous pipe"
 # shellcheck disable=SC2016 # Assertions intentionally match literal shell source.
 assert_not_contains "$runner_source" 'COPILOT_GITHUB_TOKEN="$token"' "agent runner must not place the token in a parent environment"
 # shellcheck disable=SC2016 # Assertions intentionally match literal shell source.
@@ -586,7 +604,14 @@ gh() {
   fi
   if [[ "$GH_MODE" == "claim" ]]; then
     if [[ "$1" == "issue" ]]; then
+      printf '%s\n' "$CLAIM_ISSUE_JSON"
       return 0
+    fi
+    if [[ "$*" == *"/git/commits/"* ]]; then echo test-tree; return 0; fi
+    if [[ "$*" == *"/git/commits"* ]]; then echo test-owner; return 0; fi
+    if [[ "$*" == *"/git/ref/heads/squad-claims/"* ]]; then
+      [[ -d "$CLAIM_LOCK" ]] || return 1
+      echo test-owner; return 0
     fi
     if [[ " $* " == *" --method POST "* ]]; then
       if [[ "$*" == *"refs/heads/squad-budget/"* ]]; then
@@ -643,6 +668,8 @@ assert_not_contains "$budget_remaining_source" "count_remote_worker_prs_today" "
 pass "manual PR history does not consume autonomous budget"
 
 GH_MODE="claim"
+CLAIM_ISSUE_JSON='{"state":"OPEN","title":"fixture","body":"fixture","labels":[{"name":"squad"}]}'
+release_owned_ref() { rmdir "$CLAIM_LOCK"; }
 rm -rf "$CLAIM_LOCK" "$BUDGET_LOCK"
 CURRENT_CLAIM_REF=""
 run_and_capture_rc claim_rc claim_issue 77
@@ -658,13 +685,14 @@ release_issue_claim
 pass "manual issue claims bypass autonomous budget reservations"
 
 rm -rf "$CLAIM_LOCK" "$BUDGET_LOCK"
+CLAIM_ISSUE_JSON='{"state":"OPEN","title":"fixture","body":"fixture","labels":[{"name":"squad"},{"name":"loop:auto"}]}'
 CURRENT_CLAIM_REF=""
 run_and_capture_rc claim_rc claim_autonomous_issue 78
 assert_eq "0" "$claim_rc" "autonomous issue claim"
 [[ -d "$CLAIM_LOCK" ]] || fail "autonomous issue did not acquire atomic issue claim"
 [[ -d "$BUDGET_LOCK" ]] || fail "autonomous issue did not reserve a budget slot"
-auto_claim_source=$(declare -f claim_autonomous_issue)
-claim_ref_line=$(printf '%s\n' "$auto_claim_source" | grep -n 'create_issue_claim_ref' | head -1 | cut -d: -f1)
+auto_claim_source="$(declare -f create_issue_claim_ref) $(declare -f claim_issue)"
+claim_ref_line=$(printf '%s\n' "$auto_claim_source" | grep -n 'CURRENT_CLAIM_REF=' | head -1 | cut -d: -f1)
 reserve_line=$(printf '%s\n' "$auto_claim_source" | grep -n 'reserve_pr_budget' | head -1 | cut -d: -f1)
 processing_line=$(printf '%s\n' "$auto_claim_source" | grep -n 'mark_issue_processing' | head -1 | cut -d: -f1)
 [[ "$claim_ref_line" -lt "$reserve_line" && "$reserve_line" -lt "$processing_line" ]] \
@@ -700,45 +728,18 @@ GH_MODE="budget"
 pass "PR lookup distinguishes API failure, identity mismatch, and confirmed state"
 
 revision_source=$(sed -n '/^process_revision()/,/^}/p' "$WORKER_SCRIPT")
-gate_line=$(printf '%s\n' "$revision_source" | grep -n 'run_quality_gates' | head -1 | cut -d: -f1)
-draft_line=$(printf '%s\n' "$revision_source" | grep -n 'ensure_pr_is_draft' | head -1 | cut -d: -f1)
-publication_line=$(printf '%s\n' "$revision_source" | grep -n 'publication_authorized' | head -1 | cut -d: -f1)
-push_line=$(printf '%s\n' "$revision_source" | grep -n 'git push --force-with-lease' | head -1 | cut -d: -f1)
-[[ -n "$gate_line" && -n "$draft_line" && -n "$publication_line" && -n "$push_line" ]] \
-  || fail "revision ordering markers missing"
-[[ "$gate_line" -lt "$draft_line" && "$draft_line" -lt "$publication_line" \
-  && "$publication_line" -lt "$push_line" ]] || fail "revision must gate, draft, authorize, then push"
-# shellcheck disable=SC2016 # Assertion intentionally matches literal shell source.
-assert_contains "$revision_source" 'publication_authorized "$issue_num" "squad" "squad:revision" "squad:processing"' \
-  "revision publication requires routing and revision labels"
-pass "revision gates, draft downgrade, and terminal authorization precede force-push"
-
 issue_source=$(sed -n '/^process_issue()/,/^}/p' "$WORKER_SCRIPT")
-assert_contains "$issue_source" 'PR_EXECUTIVE_SUMMARY=""' "new issue resets PR summary"
-assert_contains "$revision_source" 'PR_EXECUTIVE_SUMMARY=""' "revision resets PR summary"
-pass "PR summaries cannot leak between sequential tasks"
-
-assert_contains "$issue_source" 'Always capture' "initial issue flow documents residual-edit capture"
-residual_commit_line=$(printf '%s\n' "$issue_source" | grep -n 'local unstaged' | head -1 | cut -d: -f1)
-# shellcheck disable=SC2016 # Assertion intentionally matches literal shell source.
-zero_commit_guard_line=$(printf '%s\n' "$issue_source" | grep -n 'if \[\[ "$commit_count" -eq 0 \]\]' | head -1 | cut -d: -f1)
-[[ -n "$residual_commit_line" && -n "$zero_commit_guard_line" ]] \
-  || fail "residual commit ordering markers missing"
-[[ "$residual_commit_line" -lt "$zero_commit_guard_line" ]] \
-  || fail "residual edits must be committed before the final zero-commit guard"
-pass "initial work commits residual edits after earlier Squad commits"
-
-initial_publication_line=$(printf '%s\n' "$issue_source" | grep -n 'publication_authorized' | head -1 | cut -d: -f1)
-initial_push_line=$(printf '%s\n' "$issue_source" | grep -n 'git push origin' | head -1 | cut -d: -f1)
-[[ -n "$initial_publication_line" && -n "$initial_push_line" \
-  && "$initial_publication_line" -lt "$initial_push_line" ]] \
-  || fail "initial publication authorization must precede push"
-pass "initial publication revalidates issue state and claim before push"
-
-# shellcheck disable=SC2016 # Assertion intentionally matches literal shell source.
-assert_contains "$revision_source" '--force-with-lease=refs/heads/${branch_name}:${revision_remote_oid}' "revision uses immutable explicit lease"
-[[ "$revision_source" != *"git push --force origin"* ]] || fail "revision contains destructive force fallback"
-pass "revision publishing uses an immutable lease without force fallback"
+publish_source=$(declare -f publish_task)
+for flow in "$revision_source" "$issue_source"; do
+  gate_line=$(grep -n run_quality_gates <<<"$flow" | head -1 | cut -d: -f1)
+  publish_line=$(grep -n publish_task <<<"$flow" | head -1 | cut -d: -f1)
+  [[ "$gate_line" -lt "$publish_line" ]] || fail "quality before shared publisher"
+done
+assert_contains "$publish_source" 'publication_authorized' "publication rechecks issue and ownership"
+assert_contains "$publish_source" '--force-with-lease=' "all pushes pin remote expectation"
+assert_contains "$publish_source" '--draft' "creation is always draft"
+assert_not_contains "$publish_source" '--add-label squad:done' "publication is not completion"
+pass "new and revision flows share fail-closed draft-first publisher"
 
 # shellcheck disable=SC2016 # Assertions intentionally match literal shell source.
 assert_contains "$revision_source" 'revision_start_head=$(git rev-parse HEAD)' "revision captures starting HEAD"
@@ -756,7 +757,7 @@ assert_contains "$worker_source" 'cap autonomous loop:auto PR attempts per UTC d
 # shellcheck disable=SC2016 # Assertions intentionally match literal shell source.
 assert_contains "$worker_source" 'git/matching-refs/${prefix}' "budget uses matching-refs endpoint"
 # shellcheck disable=SC2016 # Assertions intentionally match literal shell source.
-assert_contains "$worker_source" 'git/refs/${CURRENT_CLAIM_REF#refs/}' "claim deletion uses plural refs endpoint"
+assert_contains "$worker_source" 'release_owned_ref' "claim deletion uses immutable lease"
 # shellcheck disable=SC2016 # Assertions intentionally match literal shell source.
 assert_contains "$worker_source" 'repos/${REPO_SLUG}/git/refs' "claim creation uses refs endpoint"
 # shellcheck disable=SC2016 # Assertions intentionally match literal shell source.
@@ -782,8 +783,8 @@ pass "fresh repositories receive required queue and status labels"
 
 verify_runner_source=$(declare -f run_agent_command)
 # shellcheck disable=SC2016 # Assertions intentionally match literal shell source.
-assert_contains "$verify_runner_source" 'sudo -n -u "$AGENT_USER"' "verification uses coding user"
-assert_contains "$verify_runner_source" '/usr/bin/env -i' "verification starts with empty environment"
+assert_contains "$verify_runner_source" 'sudo -n /usr/local/bin/agent-launch' "verification uses coding user"
+assert_contains "$(cat "${ROOT_DIR}/worker/agent-launch.c")" 'clearenv()' "verification starts with empty environment"
 [[ "$verify_runner_source" != *"GITHUB_TOKEN="* && "$verify_runner_source" != *"COPILOT_PAT="* ]] \
   || fail "verification runner must not inject publisher credentials"
 entrypoint_source=$(cat "$ENTRYPOINT_SCRIPT")

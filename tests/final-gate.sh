@@ -24,6 +24,7 @@ fi
 # --- C syntax (Linux only) ---
 if [[ "$(uname -s)" == "Linux" ]]; then
   c_files=()
+  [[ -f worker/agent-launch.c ]] && c_files+=(worker/agent-launch.c)
   [[ -f worker/credential-guard.c ]] && c_files+=(worker/credential-guard.c)
   [[ -f worker/credential-guard-preload.c ]] && c_files+=(worker/credential-guard-preload.c)
   if [[ ${#c_files[@]} -gt 0 ]]; then
@@ -41,6 +42,9 @@ for f in \
   deploy.sh \
   remote-deploy.sh \
   tests/worker-loop.test.sh \
+  tests/quality-lifecycle.test.sh \
+  tests/git-boundary.test.sh \
+  tests/agent-launch.container.sh \
   tests/config-equivalence.sh \
   tests/check-failed-run-access.remote.sh \
   tests/check-live-agent-secret-isolation.remote.sh \
@@ -84,3 +88,5 @@ bash tests/public-release-check.sh
 bash tests/config-equivalence.sh
 bash tests/pr-guard.test.sh
 bash tests/worker-loop.test.sh
+bash tests/quality-lifecycle.test.sh
+bash tests/git-boundary.test.sh

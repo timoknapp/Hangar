@@ -3,7 +3,7 @@
 set -euo pipefail
 
 : "${COPILOT_PAT:?COPILOT_PAT is required}"
-CRITIC_MODEL="${CRITIC_MODEL:-${COPILOT_MODEL:-}}"
+CRITIC_MODEL="${CRITIC_MODEL:-${LOOP_CRITIC_MODEL:-${COPILOT_MODEL:-}}}"
 PROBE_DIR="/workspace/runtime-preflight"
 
 mkdir -p "$PROBE_DIR"
@@ -28,16 +28,7 @@ copilot_args=(
 )
 [[ -n "$CRITIC_MODEL" ]] && copilot_args+=(--model "$CRITIC_MODEL")
 
-output=$(printf '%s' "$COPILOT_PAT" | sudo -n -u squad-agent /usr/bin/env -i \
-  HOME=/home/squad-agent \
-  USER=squad-agent \
-  LOGNAME=squad-agent \
-  PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
-  LANG=C.UTF-8 \
-  LC_ALL=C.UTF-8 \
-  CI=true \
-  NO_COLOR=1 \
-  /usr/local/bin/credential-guard copilot "${copilot_args[@]}")
+output=$(printf '%s' "$COPILOT_PAT" | sudo -n /usr/local/bin/agent-launch copilot "${copilot_args[@]}")
 
 test "$output" = "RUNTIME_PREFLIGHT_OK"
 echo "Copilot runtime preflight: PASS (${CRITIC_MODEL:-default model})"
