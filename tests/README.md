@@ -16,6 +16,17 @@ Runs automatically on every pre-merge check. Validates:
 - PR fail-closed ordering assertions
 - Worker-loop unit/integration test suite
 
+The worker suite also runs `critic-complete-input.test.sh`. Critic acceptance
+requires complete exact numbered `view` results in publisher-captured CLI JSONL,
+followed by a main-model response and successful terminal result. This was
+verified with CLI 1.0.70; incompatible/missing events, coverage holes, truncated
+content, model switches and context compaction fail closed as incomplete, without
+code-repair retries. The existing input-byte and task-time budgets still apply.
+The 32 MiB event-parser ceiling also fails closed. Full text reaching the model
+is not proof of understanding or review correctness; image/policy/verification
+requirements remain separate. Runtime acceptance must test both a clean large
+diff and a real late defect, not force an approval of a defective fixture.
+
 ### Live Proofs (remote — require running fleet)
 
 | Script | Purpose | Prerequisites |

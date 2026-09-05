@@ -86,7 +86,7 @@ run_agent_copilot() {
   grep -q 'active policy' "$input" || fail 'trusted policy missing'
   grep -q 'Actual final PR body' "$input" || fail 'summary not reviewed'
   grep -q 'UI: N/A' "$input" || fail 'nested UI summary lost'
-  printf 'VERDICT: APPROVE\nINPUT_NONCE: fixture-nonce\n'
+  bash "$ROOT/tests/critic-complete-input.test.sh" --emit "$input"
 }
 run_critic
 [[ "$REVIEWED_HEAD" == "$(git rev-parse HEAD)" && -n "$REVIEW_INPUT_HASH" && -n "$REVIEW_BODY_HASH" ]] || fail 'unbound review'

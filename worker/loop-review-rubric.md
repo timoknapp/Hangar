@@ -31,10 +31,18 @@ strict but fair — only block for real problems, not style preferences.
 
 ## Output format (required)
 
-Respond with a single verdict line first, then up to 6 short bullet reasons:
+Read the complete bound input before deciding. Use contiguous, untruncated
+`view_range` results; hashes, an end nonce, grep counts and your own assertion of
+completeness do not establish delivery. If full input is unavailable, report that
+limitation rather than approving a prefix. Text delivery is a prerequisite, not
+proof of substantive review. Required images still need separate pixel review.
+
+Respond with a single verdict line first, the input's response-binding nonce
+immediately second, then up to 6 short bullet reasons:
 
 ```
 VERDICT: APPROVE
+INPUT_NONCE: <exact value from the input>
 - <reason>
 ```
 
@@ -42,6 +50,7 @@ or
 
 ```
 VERDICT: REQUEST_CHANGES
+INPUT_NONCE: <exact value from the input>
 - <specific, actionable reason>
 ```
 

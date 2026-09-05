@@ -96,10 +96,16 @@ cat > "$FAKE_BIN/copilot" <<'FAKE_COPILOT'
 if [[ -n "${FAKE_ARGS_FILE:-}" ]]; then
   printf '%s\n' "$@" > "$FAKE_ARGS_FILE"
 fi
-printf '%b' "${FAKE_COPILOT_OUTPUT:-}"
+if [[ " $* " == *' --output-format json '* ]]; then
+  input=$(find "$WORKSPACE_DIR" -maxdepth 1 -name '.critic-input.*.md')
+  bash "$CRITIC_EVENT_FIXTURE" --emit "$input"
+else
+  printf '%b' "${FAKE_COPILOT_OUTPUT:-}"
+fi
 exit "${FAKE_COPILOT_EXIT:-0}"
 FAKE_COPILOT
 chmod +x "$FAKE_BIN/copilot"
+export CRITIC_EVENT_FIXTURE="$ROOT_DIR/tests/critic-complete-input.test.sh"
 
 export PATH="${FAKE_BIN}:$PATH"
 export WORKER_ID="worker-test"
@@ -382,7 +388,7 @@ assert_not_contains "$critic_args" "REPO_RULE_SENTINEL" "large rubric is absent 
 if find "$REPO_DIR" -maxdepth 1 -name '.critic-input.*.md' -print -quit | grep -q .; then
   fail "critic input file survived successful review"
 fi
-pass "critic accepts an attested approval with bounded argv and cleanup"
+pass "critic accepts coverage-checked approval with bounded argv and cleanup"
 
 export FAKE_COPILOT_OUTPUT="VERDICT: REQUEST_CHANGES
 INPUT_NONCE: ${critic_nonce}
@@ -865,5 +871,12 @@ ENVEOF
   assert_contains "$compose_content" '${BIND_ADDRESS:-127.0.0.1}' "generated compose reads bind address from env file"
   pass "generated compose from example config has expected structure"
 fi
+
+# Keep completeness negatives in the existing local gate without a new runner.
+(
+  unset CRITIC_TEST_MODE FAKE_COPILOT_OUTPUT CRITIC_INPUT_NONCE_OVERRIDE
+  bash "$ROOT_DIR/tests/critic-complete-input.test.sh"
+)
+pass "critic full-input delivery regression suite"
 
 echo "1..${TEST_COUNT}"
