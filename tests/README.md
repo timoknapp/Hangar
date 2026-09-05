@@ -101,7 +101,7 @@ graphs; replacement refs remain intact (ignored, never silently deleted).
 Metadata validation rejects grafts, shallow history, alternate/promisor stores,
 Git indirection, symlinks/hardlinks/special metadata, sparse/extended-format
 configuration and sparse indexes before publisher interpretation. A read-only
-unprivileged `git fsck --strict` also rejects damaged objects/trees. Masked
+unprivileged raw-object checker rejects damaged **required** objects (see below). Masked
 (assume-unchanged/skip-worktree), unmerged, symlink and gitlink index entries block.
 
 Before **and after** verification, the worker compares the exact index path/mode/
@@ -109,8 +109,11 @@ object inventory to immutable HEAD, then independently hashes every tracked
 regular file's **raw bytes** with the Git blob header. It never uses status/diff
 stat caches or executes attribute filters/textconv to establish equality. Parent
 symlinks, hardlinks, missing/nonregular files, incompatible paths/encodings and
-mode mismatches fail closed. Git inventories have a 32 MiB output ceiling; large
-files are hashed in bounded chunks; checks use the remaining task deadline. CRLF/smudge/LFS-transformed worktrees are not
+mode mismatches fail closed. Git inventories and individual commit/tree buffers
+have a 32 MiB ceiling; tree bytes and expanded inventory bytes each have a 32 MiB
+aggregate ceiling. Metadata entries, ancestor commits/parent edges and snapshot
+entries are capped at 250,000, paths at 4,096 characters. Blobs and worktree
+files stream in bounded chunks; checks use the remaining task deadline. CRLF/smudge/LFS-transformed worktrees are not
 raw-byte equality, even when Git calls them clean. Sparse checkouts, tracked
 symlinks/submodules and alternate object stores require explicit operator
 recovery/materialization; no partial-checkout exemption exists.
@@ -134,3 +137,70 @@ fixtures replace only the checker user switch (not the checker); live privilege
 and image acceptance remain separate gates. Do not materialize sensitive source
 merely to satisfy this full-tree check; safe source selection is an operator
 prerequisite, not a path exemption in public policy.
+
+### Required object scope and availability
+
+`evidence-availability.test.sh` exercises normal `--no-hardlinks` clones with
+reachable legacy zero-padded tree modes and `.GIT` history, non-UTF8 historical
+commit messages, and unreachable malformed loose objects. None blocks admission
+when absent from the required snapshots. The same production sanitizer runs at
+persisted-volume startup: there is no startup-only exemption or weakened mode.
+The startup fixture executes the actual entrypoint admission block, substituting
+only account setup; container/privilege acceptance is still a separate gate.
+
+The checker explicitly disables replacements/commit graphs and lazy fetch. It
+streams `git cat-file --batch` raw objects, checks the requested type and length,
+and recomputes the Git SHA-1 header + payload hash; `cat-file -s`, object names,
+status and normalized `ls-tree` output are **not** content proof. Packed and loose
+objects use the same check. Every invocation validates:
+
+- HEAD, task base and task start, plus explicit input roots (freshly fetched base,
+  revision head and independent selector base/head); each root's complete tree
+  and blobs, plus all staged index blobs;
+- all ancestor commit bytes and structural tree/parent/identity headers used by
+  ancestry; commit message encodings need not be UTF-8;
+- when a task base is bound, snapshots introduced in `base..HEAD`, including
+  intermediate changes later reverted (publication still transfers that history).
+
+Raw required trees must have canonical regular-file/directory modes, safe UTF-8
+names, canonical ordering, unique names and correctly typed/hash-bound children.
+Legacy historical tree encodings are tolerated only outside this required set;
+they are not a permission to admit unsafe current trees. Historical snapshots
+outside that set, other refs/reflogs and unreachable object payloads are not
+integrity-scanned. In particular, old blobs unused by evidence are not read just
+to admit a task. Selecting an old snapshot as a base makes its objects required.
+This is evidence validation, **not a repository backup/full-history audit**.
+
+The offline matrix covers baseline/verify/critic, new and revision admission,
+fresh-base checks, publication preconditions and persisted-volume startup, real
+required corruption/misaddressing (commit/tree/blob/ancestor/base/index/input),
+unsafe current trees, preserved unreachable garbage and packed large blobs.
+The full gate additionally covers masks/replacements, filters, CRLF, metadata
+indirection, critic delivery, Actions, pending receipts and approval semantics.
+Do not globally export `GIT_NO_REPLACE_OBJECTS` when running attack fixtures:
+the vulnerable control must honor replacements; production passes its own flag.
+
+### Evidence recovery
+
+On `Repository evidence blocked`, stop/restrict the worker and **preserve the
+checkout, object files, index flags and logs** for inspection. No automatic gc,
+prune, reset, clean, unstage or deletion is performed. The fixed admission does
+not require cleanup of unreachable malformed objects; retrying the same intact
+checkout works when the required evidence is healthy. Restarting is not a repair
+for corrupt required evidence, and startup still fails closed for that case.
+
+An operator should inspect a separate copy with trusted Git, check storage and
+compare required objects against a known-good authoritative clone/backup. Keep
+unpublished work and the original damaged evidence before explicitly restoring
+objects or replacing the runtime volume with a verified full clone. Rerun all
+admission, verification and review gates; do not reuse old approval receipts for
+changed evidence. `git fsck` is an optional operator audit, not the admission
+oracle; `--strict` can flag valid old imports, and a whole-store failure can be
+unrelated garbage. Do not blindly prune to turn an error green.
+
+For sparse/shallow/alternate/promisor metadata, tracked links/submodules, masked
+indexes, normalized CRLF/smudge/LFS bytes or resource ceilings, supply a supported
+full regular-file checkout or obtain an explicit operator-supported redesign.
+Do not suppress checks, silently clear flags or materialize excluded sensitive
+source. Deadline/large-history cost is a deliberate fail-closed resource limit;
+no large-monorepo performance or atomic-snapshot claim is made.

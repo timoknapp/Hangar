@@ -200,9 +200,13 @@ import sys
 sys.stdout.buffer.write(b'100644 ../outside\0'+bytes.fromhex(sys.argv[1]))
 PY_TREE
 bad_tree=$(command git hash-object --literally -t tree -w "$TMP/malformed-tree")
+bad_commit=$(printf 'unsafe snapshot\n' | command git commit-tree "$bad_tree" -p "$head")
+command git update-ref HEAD "$bad_commit"
 reject sanitize_repository_git_config
-rm ".git/objects/${bad_tree:0:2}/${bad_tree:2}"
-pass 'malformed immutable tree paths rejected without filesystem traversal'
+command git update-ref HEAD "$head"
+[[ -f ".git/objects/${bad_tree:0:2}/${bad_tree:2}" ]] || fail 'malformed object evidence deleted'
+sanitize_repository_git_config
+pass 'required malformed tree rejected without traversal; unrelated object preserved and ignored'
 
 # Filesystem anomalies: do not follow source/parent links or open special files.
 cp auth.js "$TMP/outside-source"

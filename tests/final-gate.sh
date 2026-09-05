@@ -46,6 +46,7 @@ for f in \
   tests/quality-lifecycle.test.sh \
   tests/git-boundary.test.sh \
   tests/immutable-evidence.test.sh \
+  tests/evidence-availability.test.sh \
   tests/fixtures/evidence-user-switch.sh \
   tests/image-key-hygiene.test.sh \
   tests/critic-complete-input.test.sh \
@@ -96,5 +97,6 @@ bash tests/worker-loop.test.sh
 bash tests/quality-lifecycle.test.sh
 bash tests/git-boundary.test.sh
 bash tests/immutable-evidence.test.sh
+bash tests/evidence-availability.test.sh
 bash tests/image-key-hygiene.test.sh
 python3 tests/check-policy.test.py

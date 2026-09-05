@@ -339,16 +339,19 @@ run_agent_command() {
 # filters, stat-cache shortcuts, or the agent index deciding which paths to read.
 check_repository_evidence() {
   local mode="$1" head="${2:-}" remaining
+  shift; (( $# == 0 )) || shift
   remaining=$(task_seconds_remaining) || return 1
   sudo -n -u "$AGENT_USER" /usr/bin/env -i \
     HOME="$AGENT_HOME" PATH="$AGENT_PATH" \
-    /usr/bin/timeout --kill-after=10 "$remaining" /usr/bin/node - "$WORKSPACE_DIR" "$mode" "$head" <<'NODE'
+    /usr/bin/timeout --kill-after=10 "$remaining" /usr/bin/node - "$WORKSPACE_DIR" "$mode" "$head" "$TASK_BASE_SHA" "$TASK_START_HEAD" "$@" <<'NODE'
 const fs = require('fs'), crypto = require('crypto'), cp = require('child_process');
-const [root, mode, head] = process.argv.slice(2);
-const reject = () => { throw new Error('unsupported or mismatched repository evidence'); };
-const stat = p => fs.lstatSync(p, {bigint:true});
-const regular = s => s.isFile() && s.nlink === 1n;
-try {
+const [root, mode, head, ...required] = process.argv.slice(2);
+const LIMIT = 32*1024*1024, MAX_ENTRIES = 250000;
+let batch;
+async function check() {
+  const reject = () => { throw new Error('unsupported or mismatched repository evidence'); };
+  const stat = p => fs.lstatSync(p, {bigint:true});
+  const regular = s => s.isFile() && s.nlink === 1n;
   if (!['metadata','index','tracked','clean'].includes(mode)) reject();
   if (!stat(root).isDirectory() || !stat(root + '/.git').isDirectory()) reject();
   if (mode === 'metadata') {
@@ -356,15 +359,20 @@ try {
     // subsequent config-name check is unprivileged and never follows includes.
     const forbidden = new Set(['commondir','shallow','info/grafts','info/sparse-checkout',
       'objects/info/alternates','objects/info/http-alternates','config.worktree']);
-    const walk = (dir, prefix = '') => {
-      for (const name of fs.readdirSync(dir)) {
-        const rel = prefix + name, path = dir + '/' + name, s = stat(path);
-        if (forbidden.has(rel) || rel.endsWith('.promisor')) reject();
-        if (s.isDirectory()) walk(path, rel + '/');
-        else if (!regular(s)) reject();
-      }
-    };
-    walk(root + '/.git');
+    const pending = ['']; let entries = 0;
+    while (pending.length) {
+      const prefix = pending.pop();
+      const dir = fs.opendirSync(root + '/.git/' + prefix);
+      try {
+        let entry;
+        while ((entry = dir.readSync())) {
+          const rel = prefix + entry.name, s = stat(root + '/.git/' + rel);
+          if (++entries > MAX_ENTRIES || rel.length > 4096 || forbidden.has(rel) || rel.endsWith('.promisor')) reject();
+          if (s.isDirectory()) pending.push(rel + '/');
+          else if (!regular(s)) reject();
+        }
+      } finally { dir.closeSync(); }
+    }
     if (!regular(stat(root + '/.git/config'))) reject();
     // Detect sparse/extended repository formats before the sanitizer can erase
     // their declaration. Includes are NOT followed; no values are disclosed.
@@ -373,14 +381,16 @@ try {
       {env:{PATH:process.env.PATH, GIT_CONFIG_NOSYSTEM:'1', GIT_CONFIG_GLOBAL:'/dev/null'},
        stdio:['ignore','pipe','pipe'], maxBuffer:1048576});
     if (config.status !== 1) reject();
-    process.exit(0);
+    return;
   }
-  const git = args => cp.execFileSync('/usr/bin/git', ['--no-replace-objects',
+  const gitArgs = ['--no-replace-objects',
     '--git-dir=' + root + '/.git','--work-tree=' + root,
     '-c','core.commitGraph=false','-c','core.fsmonitor=false','-c','core.hooksPath=/dev/null',
-    ...args], {cwd:root, env:{PATH:process.env.PATH, HOME:process.env.HOME,
-      GIT_CONFIG_NOSYSTEM:'1', GIT_CONFIG_GLOBAL:'/dev/null', GIT_OPTIONAL_LOCKS:'0',
-      GIT_NO_LAZY_FETCH:'1', LC_ALL:'C'}, maxBuffer:32*1024*1024, stdio:['ignore','pipe','pipe']});
+  ];
+  const options = {cwd:root, env:{PATH:process.env.PATH, HOME:process.env.HOME,
+    GIT_CONFIG_NOSYSTEM:'1', GIT_CONFIG_GLOBAL:'/dev/null', GIT_OPTIONAL_LOCKS:'0',
+    GIT_NO_LAZY_FETCH:'1', LC_ALL:'C'}, maxBuffer:LIMIT, stdio:['ignore','pipe','pipe']};
+  const git = args => cp.execFileSync('/usr/bin/git', [...gitArgs, ...args], options);
   const records = b => {
     // Reject unsupported encodings rather than aliasing distinct Git paths.
     const text = b.toString('utf8');
@@ -393,25 +403,143 @@ try {
     // H only: lowercase assumes unchanged, S skips worktree. Stage zero and
     // ordinary blobs only: no conflicts, sparse directories, links or gitlinks.
     const m = /^H (100644|100755) ([0-9a-f]{40}) 0\t([\s\S]+)$/.exec(row);
-    if (!m || !pathOK(m[3]) || index.has(m[3])) reject();
+    if (!m || !pathOK(m[3]) || m[3].length > 4096 || index.has(m[3]) || index.size >= MAX_ENTRIES) reject();
     index.set(m[3], m[1] + ' ' + m[2]);
   }
-  if (mode === 'index') {
-    // Hash-addressed names are not enough if an object file itself was forged
-    // or damaged. Validate objects/trees before publisher interpretation, still
-    // unprivileged, with replacements/commit graphs disabled and no lazy fetch.
-    git(['fsck','--strict','--no-reflogs','--no-dangling']);
-    process.exit(0);
+  // Never fsck the store: unrelated loose garbage and legacy historical trees
+  // are not evidence. Hash the actual commit DAG used for ancestry, and the full
+  // base/start/HEAD (or explicitly requested) snapshots plus staged input blobs
+  // and newly introduced snapshots in base..HEAD that publication can transfer.
+  // cat-file size/type is NOT hash proof; rehash its raw batch stream ourselves.
+  const oidOK = oid => /^[0-9a-f]{40}$/.test(oid);
+  const pinnedHead = git(['rev-parse','--verify','HEAD']).toString().trim();
+  const roots = new Set([pinnedHead, head, ...required].filter(Boolean));
+  if (!oidOK(pinnedHead) || [...roots].some(oid => !oidOK(oid))) reject();
+  batch = cp.spawn('/usr/bin/git', [...gitArgs, 'cat-file','--batch'],
+    {...options, stdio:['pipe','pipe','ignore']});
+  // Git diagnostics are intentionally discarded; EOF/protocol/hash failures
+  // all become the same safe operator error. Stream at most one object at once.
+  batch.on('error', () => {}); batch.stdin.on('error', () => {});
+  const stream = batch.stdout[Symbol.asyncIterator]();
+  let pending = Buffer.alloc(0);
+  const take = async n => {
+    if (!pending.length) {
+      const next = await stream.next();
+      if (next.done) reject();
+      pending = next.value;
+    }
+    const part = pending.subarray(0,n); pending = pending.subarray(part.length);
+    return part;
+  };
+  const object = async (oid, type, collect = false) => {
+    if (!oidOK(oid)) reject();
+    batch.stdin.write(oid + '\n');
+    let line = '';
+    for (;;) {
+      const c = (await take(1))[0];
+      if (c === 10) break;
+      if (line.length >= 128) reject();
+      line += String.fromCharCode(c);
+    }
+    const match = /^([0-9a-f]{40}) (commit|tree|blob) (0|[1-9][0-9]*)$/.exec(line);
+    if (!match || match[1] !== oid || match[2] !== type) reject();
+    const size = Number(match[3]);
+    if (!Number.isSafeInteger(size) || (collect && size > LIMIT)) reject();
+    const hash = crypto.createHash('sha1').update(type + ' ' + size + '\0');
+    const chunks = []; let remaining = size;
+    while (remaining) {
+      const chunk = await take(Math.min(remaining,65536));
+      hash.update(chunk); remaining -= chunk.length;
+      if (collect) chunks.push(chunk);
+    }
+    if ((await take(1))[0] !== 10 || hash.digest('hex') !== oid) reject();
+    return collect ? Buffer.concat(chunks, size) : null;
+  };
+  const commits = [...roots], seen = new Set(commits), snapshots = new Map(), graph = new Map();
+  let edges = 0;
+  while (commits.length) {
+    const oid = commits.pop(), bytes = await object(oid,'commit',true);
+    const end = bytes.indexOf('\n\n');
+    if (end < 0) reject();
+    // Commit text may use a historical non-UTF8 encoding. Only structural
+    // headers are interpreted, without decoding/re-encoding the hashed bytes.
+    const lines = bytes.subarray(0,end).toString('latin1').split('\n');
+    if (lines.some(x => x.includes('\0')) || !/^tree [0-9a-f]{40}$/.test(lines[0])) reject();
+    const treeOID = lines.shift().slice(5), parents = [];
+    while (lines[0]?.startsWith('parent ')) {
+      if (!/^parent [0-9a-f]{40}$/.test(lines[0])) reject();
+      parents.push(lines.shift().slice(7));
+    }
+    for (const who of ['author','committer']) {
+      if (!new RegExp('^' + who + ' [^<>]* <[^<>]*> -?[0-9]+ [+-][0-9]{4}$').test(lines.shift() || '')) reject();
+    }
+    let extra = false;
+    for (const line of lines) {
+      if (line.startsWith(' ') && extra) continue;
+      if (!/^[a-zA-Z][a-zA-Z0-9-]* /.test(line) || /^(tree|parent|author|committer) /.test(line)) reject();
+      extra = true;
+    }
+    edges += parents.length; if (edges > MAX_ENTRIES) reject();
+    graph.set(oid,{treeOID,parents});
+    if (roots.has(oid)) snapshots.set(oid,treeOID);
+    for (const parent of parents) if (!seen.has(parent)) {
+      seen.add(parent); if (seen.size > MAX_ENTRIES) reject(); commits.push(parent);
+    }
   }
-  if (!/^[0-9a-f]{40}$/.test(head)) reject();
-  const tree = new Map();
-  for (const row of records(git(['ls-tree','-rtz','--full-tree',head]))) {
-    const directory = /^040000 tree [0-9a-f]{40}\t([\s\S]+)$/.exec(row);
-    if (directory) { if (!pathOK(directory[1])) reject(); continue; }
-    const m = /^(100644|100755) blob ([0-9a-f]{40})\t([\s\S]+)$/.exec(row);
-    if (!m || !pathOK(m[3]) || tree.has(m[3])) reject();
-    tree.set(m[3], m[1] + ' ' + m[2]);
+  if (required[0]) {
+    const prior = new Set(), todo = [required[0]];
+    while (todo.length) {
+      const oid = todo.pop(); if (prior.has(oid)) continue;
+      prior.add(oid); for (const parent of graph.get(oid).parents) todo.push(parent);
+    }
+    const introduced = new Set(), pending = [pinnedHead];
+    while (pending.length) {
+      const oid = pending.pop(); if (prior.has(oid) || introduced.has(oid)) continue;
+      introduced.add(oid); const {treeOID,parents} = graph.get(oid);
+      snapshots.set(oid,treeOID); for (const parent of parents) pending.push(parent);
+    }
   }
+  const blobs = new Set([...index.values()].map(entry => entry.slice(7)));
+  const trees = new Map(), inventories = new Map(); let treeBytes = 0, inventoryBytes = 0, entries = 0;
+  for (const [commit, treeOID] of snapshots) {
+    const inventory = new Map(), todo = [[treeOID,'']];
+    while (todo.length) {
+      const [oid,prefix] = todo.pop();
+      if (!trees.has(oid)) {
+        const bytes = await object(oid,'tree',true), rows = [];
+        treeBytes += bytes.length; if (treeBytes > LIMIT) reject();
+        let pos = 0, previous; const names = new Set();
+        while (pos < bytes.length) {
+          const nul = bytes.indexOf(0,pos), space = bytes.indexOf(32,pos);
+          if (space < pos || space >= nul || nul + 21 > bytes.length) reject();
+          const mode = bytes.subarray(pos,space).toString('latin1');
+          const raw = bytes.subarray(space+1,nul), name = raw.toString('utf8');
+          if (!['40000','100644','100755'].includes(mode) || !Buffer.from(name).equals(raw) ||
+              name.includes('/') || !pathOK(name) || names.has(name)) reject();
+          // Git tree ordering compares a directory as though suffixed by '/'.
+          const key = Buffer.concat([raw, Buffer.from(mode === '40000' ? '/' : '\0')]);
+          if (previous && Buffer.compare(previous,key) >= 0) reject();
+          previous = key; names.add(name);
+          rows.push([mode,name,bytes.subarray(nul+1,nul+21).toString('hex')]); pos = nul+21;
+        }
+        trees.set(oid,rows);
+      }
+      for (const [mode,name,child] of trees.get(oid)) {
+        const path = prefix + name;
+        inventoryBytes += Buffer.byteLength(path) + 48;
+        if (++entries > MAX_ENTRIES || inventoryBytes > LIMIT || path.length > 4096) reject();
+        if (mode === '40000') todo.push([child,path + '/']);
+        else { inventory.set(path,mode + ' ' + child); blobs.add(child); }
+      }
+    }
+    inventories.set(commit,inventory);
+  }
+  if (blobs.size > MAX_ENTRIES) reject();
+  for (const oid of blobs) await object(oid,'blob');
+  if (git(['rev-parse','--verify','HEAD']).toString().trim() !== pinnedHead) reject();
+  if (mode === 'index') return;
+  if (!oidOK(head) || head !== pinnedHead) reject();
+  const tree = inventories.get(head);
   if (tree.size !== index.size) reject();
   const dirs = new Set(['']);
   for (const [path, entry] of tree) {
@@ -444,11 +572,12 @@ try {
   // Ignored build artifacts are allowed; untracked nonignored files still block
   // admission. No status/index refresh writes are made by this check.
   if (mode === 'clean' && git(['ls-files','--others','--exclude-standard','-z']).length) reject();
-} catch {
-  // Do not expose source bytes, attacker-selected paths, Git stderr or hashes.
-  console.error('Repository evidence blocked: unsupported metadata/index/path or tracked bytes/modes differ from HEAD');
-  process.exitCode = 1;
 }
+check().catch(() => {
+  // Do not expose source bytes, attacker-selected paths, Git stderr or hashes.
+  console.error('Repository evidence blocked: required objects corrupt/missing, unsupported metadata/index/path, resource limit, or tracked bytes/modes differ. Preserve the checkout; operator: see tests/README.md (Evidence recovery).');
+  process.exitCode = 1;
+}).finally(() => { if (batch) { batch.stdin.destroy(); batch.kill(); } });
 NODE
 }
 
@@ -609,7 +738,10 @@ workspace_clean() {
 
 fetch_task_base() {
   git fetch --no-tags origin "+refs/heads/${DEFAULT_BRANCH}:refs/remotes/origin/${DEFAULT_BRANCH}" || return 1
-  git rev-parse --verify "refs/remotes/origin/${DEFAULT_BRANCH}^{commit}"
+  local fetched
+  fetched=$(git rev-parse --verify "refs/remotes/origin/${DEFAULT_BRANCH}^{commit}") || return 1
+  check_repository_evidence index "$fetched" || return 1
+  printf '%s\n' "$fetched"
 }
 
 prepare_task_base() {
@@ -620,6 +752,7 @@ prepare_task_base() {
   if [[ "$revision" == true ]]; then
     git fetch --no-tags origin "+refs/heads/${branch}:refs/remotes/origin/${branch}" || return 1
     remote_head=$(git rev-parse --verify "refs/remotes/origin/${branch}^{commit}") || return 1
+    check_repository_evidence index "$remote_head" || return 1
     git merge-base --is-ancestor "$base" "$remote_head" || {
       log_error "Revision does not contain fresh base; explicit human rebase/recovery required"; return 1;
     }
@@ -646,7 +779,7 @@ prepare_task_base() {
 }
 
 task_integrity() {
-  check_repository_evidence metadata || return 1
+  check_repository_evidence metadata && check_repository_evidence index || return 1
   [[ -n "$TASK_BASE_SHA" && -n "$TASK_BRANCH" ]] || return 1
   [[ "$(git branch --show-current)" == "$TASK_BRANCH" ]] || return 1
   git merge-base --is-ancestor "$TASK_BASE_SHA" HEAD || return 1
@@ -697,6 +830,7 @@ agent_startup_canary() {
 read_trusted_file() {
   local path="$1" content LC_ALL=C
   [[ "$path" != /* && "$path" != *'..'* && -n "$TASK_BASE_SHA" ]] || return 1
+  check_repository_evidence metadata && check_repository_evidence index "$TASK_BASE_SHA" || return 1
   [[ "$(git ls-tree "$TASK_BASE_SHA" -- "$path" | awk '{print $1}')" =~ ^100(644|755)$ ]] || return 1
   content=$(git show "${TASK_BASE_SHA}:${path}") || return 1
   (( ${#content} <= LOOP_MAX_REVIEW_BYTES )) || return 1
@@ -2010,6 +2144,7 @@ resolve_check_policy() {
   # Ref names or malformed metadata must not become Git options/revisions.
   [[ "$base" =~ ^[0-9a-f]{40}$ && "$head" =~ ^[0-9a-f]{40}$ ]] || return 1
   sanitize_repository_git_config || return 1
+  check_repository_evidence index "$base" "$head" || return 1
   git --no-replace-objects -C "$WORKSPACE_DIR" merge-base --is-ancestor "$base" "$head" || return 1
   git --no-replace-objects -C "$WORKSPACE_DIR" diff --no-ext-diff --no-textconv --no-renames --name-only -z "$base" "$head" -- |
     select_check_policy "$base" "$head"
