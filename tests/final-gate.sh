@@ -45,6 +45,7 @@ for f in \
   tests/worker-loop.test.sh \
   tests/quality-lifecycle.test.sh \
   tests/git-boundary.test.sh \
+  tests/image-key-hygiene.test.sh \
   tests/agent-launch.container.sh \
   tests/config-equivalence.sh \
   tests/check-failed-run-access.remote.sh \
@@ -91,4 +92,5 @@ bash tests/pr-guard.test.sh
 bash tests/worker-loop.test.sh
 bash tests/quality-lifecycle.test.sh
 bash tests/git-boundary.test.sh
+bash tests/image-key-hygiene.test.sh
 python3 tests/check-policy.test.py
