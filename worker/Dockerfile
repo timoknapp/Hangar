@@ -20,7 +20,8 @@ FROM debian:13-slim
 
 ARG NODE_VERSION=22
 
-# System packages
+# System packages: remove package-generated SSH host keys in this same layer.
+# The entrypoint generates per-container keys at runtime, never at build time.
 RUN apt-get update && apt-get install -y --no-install-recommends \
     git \
     curl \
@@ -35,6 +36,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     openssh-server \
     nginx \
     vim-tiny \
+  && rm -f /etc/ssh/ssh_host_*_key /etc/ssh/ssh_host_*_key.pub \
   && rm -rf /var/lib/apt/lists/*
 
 # Node.js
