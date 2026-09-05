@@ -135,6 +135,8 @@ export COPILOT_PAT="test-token"
 
 # shellcheck source=/dev/null
 source "$WORKER_SCRIPT"
+# shellcheck source=tests/fixtures/evidence-user-switch.sh
+source "$ROOT_DIR/tests/fixtures/evidence-user-switch.sh"
 CURRENT_ISSUE=42
 CURRENT_TOKEN="test-token"
 branch_name="feature"

@@ -45,6 +45,7 @@ with tempfile.TemporaryDirectory(prefix='hangar-check-policy-') as directory:
     env.update(BASE=base, HEAD_SHA=head)
     shell = '''set -euo pipefail
 source "$SOURCE"
+source "$(dirname "$SOURCE")/../tests/fixtures/evidence-user-switch.sh"
 trap - SIGINT SIGTERM
 cd "$WORKSPACE_DIR"
 gh() {

@@ -9,6 +9,8 @@ export GITHUB_OWNER=example GITHUB_REPO=fixture REPO_BRANCH=main
 export WORKSPACE_DIR="$TMP/repo" LOOP_STATE_DIR="$TMP/state"
 # shellcheck source=/dev/null
 source "$ROOT/worker/worker-loop.sh"
+# shellcheck source=tests/fixtures/evidence-user-switch.sh
+source "$ROOT/tests/fixtures/evidence-user-switch.sh"
 fail() { echo "FAIL: $*" >&2; exit 1; }
 reject() { if "$@"; then fail "unexpected success: $*"; fi; }
 command git init -q "$WORKSPACE_DIR"

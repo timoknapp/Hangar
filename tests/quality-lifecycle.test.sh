@@ -12,6 +12,8 @@ AGENT_GROUP=$(id -gn)
 export AGENT_GROUP
 # shellcheck source=/dev/null
 source "$ROOT/worker/worker-loop.sh"
+# shellcheck source=tests/fixtures/evidence-user-switch.sh
+source "$ROOT/tests/fixtures/evidence-user-switch.sh"
 fail() { echo "FAIL: $*" >&2; exit 1; }
 ok() { echo "PASS: $*"; }
 reject() { if "$@"; then fail "unexpected success: $*"; fi; }
@@ -26,6 +28,8 @@ printf 'active policy\n' > .squad/GOVERNANCE.md
 printf 'base\n' > app.txt
 git add . && git commit -qm base && git branch -M main
 git remote add origin "$TMP/remote"
+# Sanitization must retain this fixture-only local destination, never a network remote.
+CLEAN_REPO_URL="$TMP/remote"
 git push -q origin main
 init_loop_state
 begin_task

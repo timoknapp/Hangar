@@ -63,6 +63,8 @@ export GITHUB_OWNER=example GITHUB_REPO=repo REPO_BRANCH=main
 export AGENT_GROUP; AGENT_GROUP=$(id -gn)
 # shellcheck source=/dev/null
 source "$ROOT/worker/worker-loop.sh"
+# shellcheck source=tests/fixtures/evidence-user-switch.sh
+source "$ROOT/tests/fixtures/evidence-user-switch.sh"
 fail() { echo "FAIL: $*" >&2; exit 1; }
 mkdir -p "$WORKSPACE_DIR"
 cd "$WORKSPACE_DIR"

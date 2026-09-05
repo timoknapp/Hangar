@@ -31,10 +31,11 @@ CLEAN_REPO_URL="https://github.com/${REPO_SLUG}.git"
 # Publisher and coding user share the checkout through the squad group.
 umask 0002
 
-# Every trusted Git invocation ignores repository hooks and resets any
-# repository-provided credential helpers before using the publisher-only helper.
+# Trusted object interpretation never honors replacements or cached ancestry.
+# Ignore hooks and reset helpers before using the publisher-only credential helper.
 git() {
-  command git \
+  GIT_NO_LAZY_FETCH=1 command git --no-replace-objects \
+    -c core.commitGraph=false \
     -c core.hooksPath=/dev/null \
     -c core.fsmonitor=false \
     -c credential.helper= \
@@ -332,17 +333,133 @@ run_agent_command() {
   return "$process_rc"
 }
 
+# Read-only evidence check, always as the coding user with no publisher secrets.
+# The inline program is publisher-owned, not loaded from the repository. Git is
+# used only for raw inventories; filesystem bytes are hashed without attributes,
+# filters, stat-cache shortcuts, or the agent index deciding which paths to read.
+check_repository_evidence() {
+  local mode="$1" head="${2:-}" remaining
+  remaining=$(task_seconds_remaining) || return 1
+  sudo -n -u "$AGENT_USER" /usr/bin/env -i \
+    HOME="$AGENT_HOME" PATH="$AGENT_PATH" \
+    /usr/bin/timeout --kill-after=10 "$remaining" /usr/bin/node - "$WORKSPACE_DIR" "$mode" "$head" <<'NODE'
+const fs = require('fs'), crypto = require('crypto'), cp = require('child_process');
+const [root, mode, head] = process.argv.slice(2);
+const reject = () => { throw new Error('unsupported or mismatched repository evidence'); };
+const stat = p => fs.lstatSync(p, {bigint:true});
+const regular = s => s.isFile() && s.nlink === 1n;
+try {
+  if (!['metadata','index','tracked','clean'].includes(mode)) reject();
+  if (!stat(root).isDirectory() || !stat(root + '/.git').isDirectory()) reject();
+  if (mode === 'metadata') {
+    // First reject ALL metadata indirection using only lstat/readdir. The
+    // subsequent config-name check is unprivileged and never follows includes.
+    const forbidden = new Set(['commondir','shallow','info/grafts','info/sparse-checkout',
+      'objects/info/alternates','objects/info/http-alternates','config.worktree']);
+    const walk = (dir, prefix = '') => {
+      for (const name of fs.readdirSync(dir)) {
+        const rel = prefix + name, path = dir + '/' + name, s = stat(path);
+        if (forbidden.has(rel) || rel.endsWith('.promisor')) reject();
+        if (s.isDirectory()) walk(path, rel + '/');
+        else if (!regular(s)) reject();
+      }
+    };
+    walk(root + '/.git');
+    if (!regular(stat(root + '/.git/config'))) reject();
+    // Detect sparse/extended repository formats before the sanitizer can erase
+    // their declaration. Includes are NOT followed; no values are disclosed.
+    const config = cp.spawnSync('/usr/bin/git', ['config','--file',root + '/.git/config',
+      '--no-includes','--name-only','--get-regexp','^(core\\.sparsecheckout|index\\.sparse|extensions\\.)'],
+      {env:{PATH:process.env.PATH, GIT_CONFIG_NOSYSTEM:'1', GIT_CONFIG_GLOBAL:'/dev/null'},
+       stdio:['ignore','pipe','pipe'], maxBuffer:1048576});
+    if (config.status !== 1) reject();
+    process.exit(0);
+  }
+  const git = args => cp.execFileSync('/usr/bin/git', ['--no-replace-objects',
+    '--git-dir=' + root + '/.git','--work-tree=' + root,
+    '-c','core.commitGraph=false','-c','core.fsmonitor=false','-c','core.hooksPath=/dev/null',
+    ...args], {cwd:root, env:{PATH:process.env.PATH, HOME:process.env.HOME,
+      GIT_CONFIG_NOSYSTEM:'1', GIT_CONFIG_GLOBAL:'/dev/null', GIT_OPTIONAL_LOCKS:'0',
+      GIT_NO_LAZY_FETCH:'1', LC_ALL:'C'}, maxBuffer:32*1024*1024, stdio:['ignore','pipe','pipe']});
+  const records = b => {
+    // Reject unsupported encodings rather than aliasing distinct Git paths.
+    const text = b.toString('utf8');
+    if (!Buffer.from(text).equals(b) || (text && !text.endsWith('\0'))) reject();
+    return text ? text.slice(0,-1).split('\0') : [];
+  };
+  const pathOK = p => p && p.split('/').every(x => x && x !== '.' && x !== '..' && x.toLowerCase() !== '.git');
+  const index = new Map();
+  for (const row of records(git(['ls-files','--stage','-v','-z','--sparse']))) {
+    // H only: lowercase assumes unchanged, S skips worktree. Stage zero and
+    // ordinary blobs only: no conflicts, sparse directories, links or gitlinks.
+    const m = /^H (100644|100755) ([0-9a-f]{40}) 0\t([\s\S]+)$/.exec(row);
+    if (!m || !pathOK(m[3]) || index.has(m[3])) reject();
+    index.set(m[3], m[1] + ' ' + m[2]);
+  }
+  if (mode === 'index') {
+    // Hash-addressed names are not enough if an object file itself was forged
+    // or damaged. Validate objects/trees before publisher interpretation, still
+    // unprivileged, with replacements/commit graphs disabled and no lazy fetch.
+    git(['fsck','--strict','--no-reflogs','--no-dangling']);
+    process.exit(0);
+  }
+  if (!/^[0-9a-f]{40}$/.test(head)) reject();
+  const tree = new Map();
+  for (const row of records(git(['ls-tree','-rtz','--full-tree',head]))) {
+    const directory = /^040000 tree [0-9a-f]{40}\t([\s\S]+)$/.exec(row);
+    if (directory) { if (!pathOK(directory[1])) reject(); continue; }
+    const m = /^(100644|100755) blob ([0-9a-f]{40})\t([\s\S]+)$/.exec(row);
+    if (!m || !pathOK(m[3]) || tree.has(m[3])) reject();
+    tree.set(m[3], m[1] + ' ' + m[2]);
+  }
+  if (tree.size !== index.size) reject();
+  const dirs = new Set(['']);
+  for (const [path, entry] of tree) {
+    if (index.get(path) !== entry) reject();
+    const parts = path.split('/'); parts.pop();
+    let parent = '';
+    for (const part of parts) {
+      parent += (parent ? '/' : '') + part;
+      if (!dirs.has(parent)) {
+        if (!stat(root + '/' + parent).isDirectory()) reject();
+        dirs.add(parent);
+      }
+    }
+    const file = root + '/' + path, before = stat(file);
+    if (!regular(before) || (before.mode & 0o7000n) !== 0n ||
+        ((before.mode & 0o100n) !== 0n ? '100755' : '100644') !== entry.slice(0,6)) reject();
+    const fd = fs.openSync(file, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW | fs.constants.O_NONBLOCK);
+    try {
+      const opened = fs.fstatSync(fd, {bigint:true});
+      if (!regular(opened) || opened.ino !== before.ino || opened.dev !== before.dev) reject();
+      const hash = crypto.createHash('sha1').update('blob ' + opened.size + '\0');
+      const buf = Buffer.alloc(65536); let total = 0n, n;
+      while ((n = fs.readSync(fd, buf, 0, buf.length, null))) { hash.update(buf.subarray(0,n)); total += BigInt(n); }
+      const after = fs.fstatSync(fd, {bigint:true}), named = stat(file);
+      if (total !== opened.size || ['dev','ino','mode','nlink','size','mtimeNs','ctimeNs'].some(k =>
+        opened[k] !== after[k] || after[k] !== named[k]) || hash.digest('hex') !== entry.slice(7)) reject();
+    } finally { fs.closeSync(fd); }
+  }
+  if (git(['rev-parse','--verify','HEAD']).toString().trim() !== head) reject();
+  // Ignored build artifacts are allowed; untracked nonignored files still block
+  // admission. No status/index refresh writes are made by this check.
+  if (mode === 'clean' && git(['ls-files','--others','--exclude-standard','-z']).length) reject();
+} catch {
+  // Do not expose source bytes, attacker-selected paths, Git stderr or hashes.
+  console.error('Repository evidence blocked: unsupported metadata/index/path or tracked bytes/modes differ from HEAD');
+  process.exitCode = 1;
+}
+NODE
+}
+
 # Agent-controlled files include .git/config. Rebuild it from trusted values
 # before the publisher invokes Git, preventing custom helpers, URL rewrites,
 # hooks, filters, or aliases from executing with publisher credentials.
 sanitize_repository_git_config() {
-  # One narrow checkout shape only. Never ask Git to resolve untrusted indirection.
+  # No publisher Git invocation before this unprivileged, non-content metadata
+  # check. Preserve grafts/shallow/sparse/indirection evidence, never remove it.
   local gitdir="${WORKSPACE_DIR}/.git" trusted_config
-  if [[ -L "$gitdir" || ! -d "$gitdir" || -e "$gitdir/commondir" || -L "$gitdir/commondir" ||
-        -L "$gitdir/config" || ! -f "$gitdir/config" ]]; then
-    log_error "Repository Git metadata layout rejected (indirection or non-regular config)"
-    return 1
-  fi
+  check_repository_evidence metadata || return 1
   trusted_config=$(secure_temp_file trusted-git-config) || return 1
   if ! command git config --file "$trusted_config" core.repositoryFormatVersion 0 ||
      ! command git config --file "$trusted_config" core.fileMode true ||
@@ -358,10 +475,7 @@ sanitize_repository_git_config() {
     rm -f "$trusted_config"
     return 1
   fi
-  # Agent processes are already terminated; reject unexpected replacement instead
-  # of resolving it with a publisher Git command.
-  [[ ! -L "$gitdir" && ! -e "$gitdir/commondir" && ! -L "$gitdir/commondir" &&
-     -f "$gitdir/config" && ! -L "$gitdir/config" ]]
+  check_repository_evidence metadata && check_repository_evidence index
 }
 
 abort_issue_without_git() {
@@ -487,9 +601,10 @@ begin_task() {
 }
 
 workspace_clean() {
-  local status
-  status=$(git status --porcelain --untracked-files=all) || return 1
-  [[ -z "$status" ]]
+  local head
+  check_repository_evidence metadata || return 1
+  head=$(git rev-parse --verify HEAD) || return 1
+  check_repository_evidence clean "$head"
 }
 
 fetch_task_base() {
@@ -531,6 +646,7 @@ prepare_task_base() {
 }
 
 task_integrity() {
+  check_repository_evidence metadata || return 1
   [[ -n "$TASK_BASE_SHA" && -n "$TASK_BRANCH" ]] || return 1
   [[ "$(git branch --show-current)" == "$TASK_BRANCH" ]] || return 1
   git merge-base --is-ancestor "$TASK_BASE_SHA" HEAD || return 1
@@ -1792,11 +1908,17 @@ save_pending_publication() {
 
 publish_task() {
   local issue="$1" title="$2" branch="$3" remote_oid="$4" existing pr_url
+  if ! sanitize_repository_git_config || ! workspace_clean; then
+    cleanup_issue "$issue" "$branch" "Repository evidence drift before publication"; return 1
+  fi
   if ! task_integrity || ! fresh_base_unchanged; then cleanup_issue "$issue" "$branch" "Base/HEAD drift before publication"; return 1; fi
   publication_authorized "$issue" squad squad:processing || {
     cleanup_issue "$issue" "$branch" "$PUBLICATION_BLOCK_REASON"; return 1;
   }
   [[ -n "$FINAL_PR_BODY" ]] || return 1
+  if [[ -n "$VERIFIED_HEAD" && "$(git rev-parse HEAD)" != "$VERIFIED_HEAD" ]]; then
+    cleanup_issue "$issue" "$branch" "Verification HEAD drift before publication"; return 1
+  fi
   if [[ "$LOOP_CRITIC" == true ]] && { [[ "$(git rev-parse HEAD)" != "$REVIEWED_HEAD" ]] ||
     [[ "$(printf '%s' "$FINAL_PR_BODY" | sha256sum | cut -d' ' -f1)" != "$REVIEW_BODY_HASH" ]]; }; then
     cleanup_issue "$issue" "$branch" "Review/body evidence drift"; return 1
@@ -2166,14 +2288,17 @@ run_verify_gate() {
   VERIFIED_HEAD=""
   VERIFY_FAILURE_KIND=""
   agent_startup_canary || { VERIFY_FAILURE_KIND=infrastructure; return 4; }
-  if [[ "${LOOP_VERIFY:-off}" == off && -z "$LOOP_PROFILE_DIR" ]]; then return 3; fi
   local vcmd vlog verify_rc=0 before after
+  VERIFY_FAILURE_KIND=infrastructure
+  cd "$WORKSPACE_DIR" || return 4
+  sanitize_repository_git_config || return 4
+  before=$(git rev-parse --verify HEAD) || return 4
+  check_repository_evidence tracked "$before" || return 4
+  if [[ "${LOOP_VERIFY:-off}" == off && -z "$LOOP_PROFILE_DIR" ]]; then VERIFY_FAILURE_KIND=""; return 3; fi
   vcmd=$(resolve_verify_cmd) || { VERIFY_FAILURE_KIND=infrastructure; return 4; }
   [[ -n "$vcmd" ]] || return 2
-  cd "$WORKSPACE_DIR" || return 4
-  git diff --quiet && git diff --cached --quiet || return 4
-  before=$(git rev-parse HEAD) || return 4
   vlog=$(secure_temp_file "verify-${CURRENT_ISSUE:-x}") || return 4
+  VERIFY_FAILURE_KIND=""
   run_agent_command "$vcmd" >"$vlog" 2>&1 || verify_rc=$?
   if ! grep -qx HANGAR_AGENT_STARTED "$vlog" || [[ "$verify_rc" == 124 || "$verify_rc" == 125 || "$verify_rc" == 137 ]]; then
     VERIFY_FAILURE_KIND=infrastructure
@@ -2186,7 +2311,7 @@ run_verify_gate() {
     return 4
   fi
   after=$(git rev-parse HEAD) || VERIFY_FAILURE_KIND=infrastructure
-  if [[ "$before" != "$after" ]] || ! git diff --quiet || ! git diff --cached --quiet; then
+  if [[ "$before" != "$after" ]] || ! check_repository_evidence tracked "$before"; then
     printf '\nVerification changed HEAD or tracked files; evidence invalidated.\n' >>"$vlog"
     VERIFY_FAILURE_KIND=infrastructure
   fi
@@ -2421,6 +2546,7 @@ run_critic() {
 
   local rubric diff cprompt cmodel clog copilot_exit nonce critic_input critic_input_rel base_ref
   CRITIC_FAILURE_KIND=infrastructure
+  sanitize_repository_git_config || { CRITIC_FEEDBACK="Repository metadata/index rejected"; return 1; }
   task_integrity || { CRITIC_FEEDBACK="Branch or ancestry drift"; return 1; }
   REVIEWED_HEAD=$(git rev-parse HEAD) || return 1
   rubric=$(resolve_critic_rubric) || { CRITIC_FEEDBACK="Trusted review context unavailable/incomplete"; return 1; }
@@ -2545,15 +2671,16 @@ ${CRITIC_FEEDBACK}"
   fi
 
   verdict=$(printf '%s\n' "$verdict_lines" | sed -E 's/^VERDICT:[[:space:]]*//; s/[[:space:]]*$//')
+  # Validate BOTH verdicts before granting a code-repair retry or approval.
+  if ! sanitize_repository_git_config || ! task_integrity || [[ "$(git rev-parse HEAD)" != "$REVIEWED_HEAD" ]] ||
+     { [[ -n "$VERIFIED_HEAD" ]] && ! check_repository_evidence tracked "$VERIFIED_HEAD"; }; then
+    CRITIC_FAILURE_KIND=infrastructure
+    CRITIC_FEEDBACK="Repository evidence changed during review"
+    return 1
+  fi
   if [[ "$verdict" == "REQUEST_CHANGES" ]]; then
     CRITIC_FAILURE_KIND="review"
     log "Critic verdict: REQUEST_CHANGES"
-    return 1
-  fi
-
-  if ! task_integrity || [[ "$(git rev-parse HEAD)" != "$REVIEWED_HEAD" ]]; then
-    CRITIC_FAILURE_KIND=infrastructure
-    CRITIC_FEEDBACK="HEAD changed during review"
     return 1
   fi
   CRITIC_FAILURE_KIND=""
