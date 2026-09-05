@@ -34,6 +34,7 @@ if mode not in ['missing','forged-response']:
         if mode=='forged-content' and start==101: content='\n'.join(f'{i+1}. forged' for i in range(start-1,end))
         if mode=='short-line' and start==101: content='\n'.join(f'{i+1}. {lines[i][:-1]}' for i in range(start-1,end))
         if mode=='short-range' and start==101: content='\n'.join(f'{i+1}. {lines[i]}' for i in range(start-1,end-1))
+        if mode=='long-line-truncated': content='\n'.join(f'{i+1}. {lines[i][:131072]}' for i in range(start-1,end))
         if mode=='detailed-only': content='Read complete; see detailedContent'
         read(start,end,tool='grep' if mode=='grep' else 'view',content=content,
              **({'parentToolCallId':'child'} if mode=='subagent' else {}))
@@ -135,6 +136,19 @@ b=pathlib.Path(sys.argv[1]).read_bytes()
 assert b.index(b'+function authorize(admin) { return true; }')>131072
 PY
 echo 'PASS: late defect >128KiB preserved, complete REQUEST_CHANGES remains actionable (fake judgment)'
+python3 - <<'PY'
+from pathlib import Path
+Path('long-line.txt').write_text('x'*196608+' END_OF_LONG_LINE\n')
+PY
+git add long-line.txt; git commit -qm 'pathological long-line delivery fixture'
+CRITIC_TEST_MODE=long-line-truncated
+FAKE_COPILOT_OUTPUT=$'VERDICT: APPROVE\nINPUT_NONCE: fixture-nonce\n- Claimed complete review.'
+if run_critic; then fail 'silently truncated >128KiB single line accepted'; fi
+[[ "$CRITIC_FAILURE_KIND" == incomplete ]] || fail 'long-line truncation became code repair'
+echo 'PASS: >128KiB single line truncated without marker fails closed under unchanged denials'
+CRITIC_TEST_MODE=full
+run_critic || fail 'exact complete long-line result rejected'
+echo 'PASS: exact complete long-line delivery accepted (fake CLI, not runtime capacity claim)'
 LOOP_MAX_REVIEW_BYTES=32
 run_agent_copilot() { fail 'oversize called model'; }
 if run_critic; then fail 'oversize accepted'; fi
