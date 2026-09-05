@@ -446,8 +446,35 @@ When an App can read Actions but not check rollups, explicitly select `checkBack
 `requiredWorkflows` (workflow display names) in addition to `requiredChecks` (job names).
 This path filters exact head, branch and pull-request event, uses the latest run/attempt per workflow,
 and fails closed on denied APIs or responses exceeding its explicit 100-run/job bounds.
-Path-conditional workflows may be absent; if observed, their failures still block.
-Projects must include applicable conditional-presence policy in their trusted local verifier or universal governance workflow.
+All emitted workflows/jobs remain blocking unless an exact administrative workflow is explicitly excluded.
+For Actions, optional operator-owned `conditionalWorkflows` adds path-selected requirements:
+
+```json
+{
+  "conditionalWorkflows": [
+    {"workflow": "Dependency Review", "checks": ["dependency-review"], "paths": ["package.json", "packages/**/package.json"]}
+  ],
+  "ignoredWorkflows": ["Release Notes"]
+}
+```
+
+Both default to `[]`; no repository-specific selector is inferred. Copy reviewed trigger paths from the trusted policy,
+not a candidate workflow or PR prose. Paths are case-sensitive, repository-relative positive patterns:
+`*` and `?` match within one component; a complete `**` component matches zero or more directories/components.
+Negation, brackets, braces, backslashes, embedded `**` and parent traversal are rejected. Every matched workflow and its
+workflow-qualified jobs must appear exactly once and succeed, including runs that report SKIPPED/NEUTRAL.
+An unrelated absent conditional workflow is N/A; an emitted non-excluded failure still blocks.
+The selector reads the complete immutable base/head diff with rename detection disabled, so deletions and renames
+out of selected paths still apply. Unsupported/non-UTF8, over-10,000-path or over-4-MiB inventories fail closed.
+No repository script or workflow YAML executes as publisher. Git metadata is sanitized first.
+Missing local immutable commits or changed policy prevents readiness; no guessed fetch/ref fallback occurs.
+
+`ignoredWorkflows` accepts exact administrative display names only. Required universal/conditional workflows cannot
+be excluded; an excluded workflow containing a universal required job fails closed rather than hiding that job.
+Its jobs API must remain readable. Other workflows, including unknown failures, retain conservative blocking.
+These workflow selectors require the Actions backend and are propagated from `repos.json` through Compose and the entrypoint.
+The selected requirements plus config, base/head and complete path hash are pinned in the pending receipt and compared
+on every poll. Old receipts without policy binding block draft-only until explicit recovery; do not resume them as green.
 Do not label workflow names as job names or assume an absent applicable workflow means N/A.
 No merge is performed.
 

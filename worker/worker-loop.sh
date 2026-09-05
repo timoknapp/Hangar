@@ -74,6 +74,8 @@ LOOP_UNATTENDED_LABELS="${LOOP_UNATTENDED_LABELS:-[\"loop:auto\"]}"
 LOOP_REQUIRED_CHECKS="${LOOP_REQUIRED_CHECKS:-[]}"
 LOOP_CHECK_BACKEND="${LOOP_CHECK_BACKEND:-checks}"
 LOOP_REQUIRED_WORKFLOWS="${LOOP_REQUIRED_WORKFLOWS:-[]}"
+LOOP_CONDITIONAL_WORKFLOWS="${LOOP_CONDITIONAL_WORKFLOWS:-[]}"
+LOOP_IGNORED_WORKFLOWS="${LOOP_IGNORED_WORKFLOWS:-[]}"
 LOOP_MAX_ACTIVE_ISSUES="${LOOP_MAX_ACTIVE_ISSUES:-0}"
 LOOP_MAX_TASK_SECONDS="${LOOP_MAX_TASK_SECONDS:-3600}"
 LOOP_MAX_REVIEW_BYTES="${LOOP_MAX_REVIEW_BYTES:-262144}"
@@ -464,6 +466,7 @@ init_loop_state() {
     jq -e 'type == "array" and all(.[]; type == "string" and length > 0)' <<<"$value" >/dev/null || return 1
   done
   [[ "$LOOP_CHECK_BACKEND" == checks || "$LOOP_CHECK_BACKEND" == actions ]] || return 1
+  select_check_policy '' '' </dev/null >/dev/null || return 1
   [[ "$LOOP_MAX_ACTIVE_ISSUES" =~ ^[01]$ && "$LOOP_MAX_TASK_SECONDS" =~ ^[1-9][0-9]*$ &&
      "$LOOP_MAX_REVIEW_BYTES" =~ ^[1-9][0-9]*$ && "$LOOP_MAX_RETRIES" =~ ^[0-9]+$ ]]
 }
@@ -1769,7 +1772,8 @@ Auto-committed by Squad Worker ${WORKER_ID}." || return 1
 save_pending_publication() {
   local issue="$1" branch="$2" url="$3"
   init_loop_state || return 1
-  local tmp
+  local tmp check_policy
+  check_policy=$(resolve_check_policy "$TASK_BASE_SHA" "$(git rev-parse HEAD)") || return 1
   tmp=$(mktemp "${LOOP_STATE_DIR}/pending.XXXXXX") || return 1
   jq -n --arg issue "$issue" --arg branch "$branch" --arg url "$url" \
     --arg base "$TASK_BASE_SHA" --arg head "$(git rev-parse HEAD)" \
@@ -1778,10 +1782,11 @@ save_pending_publication() {
     --arg body "$FINAL_PR_BODY" --arg bodyHash "$REVIEW_BODY_HASH" \
     --arg contractHash "$ISSUE_CONTRACT_HASH" --arg claim "$CURRENT_CLAIM_REF" \
     --arg claimOid "$CURRENT_CLAIM_OID" --arg wip "$CURRENT_WIP_REF" \
+    --argjson checkPolicy "$check_policy" \
     --argjson deadline "$TASK_DEADLINE" --argjson keepDraft "$TASK_KEEP_DRAFT" \
     '{issue:$issue,branch:$branch,url:$url,base:$base,head:$head,verified:$verified,reviewed:$reviewed,
       inputHash:$inputHash,diffHash:$diffHash,body:$body,bodyHash:$bodyHash,contractHash:$contractHash,
-      claim:$claim,claimOid:$claimOid,wip:$wip,deadline:$deadline,keepDraft:$keepDraft}' >"$tmp" || return 1
+      claim:$claim,claimOid:$claimOid,wip:$wip,deadline:$deadline,keepDraft:$keepDraft,checkPolicy:$checkPolicy}' >"$tmp" || return 1
   chmod 600 "$tmp" && mv "$tmp" "${LOOP_STATE_DIR}/pending.json"
 }
 
@@ -1825,38 +1830,119 @@ publish_task() {
   return 0
 }
 
+# Consume only operator configuration and a bounded NUL-delimited immutable diff.
+# No repository scripts, YAML interpretation, shell globs or publisher hooks.
+select_check_policy() {
+  local config
+  config=$(jq -cn --arg backend "$LOOP_CHECK_BACKEND" --argjson checks "$LOOP_REQUIRED_CHECKS" \
+    --argjson workflows "$LOOP_REQUIRED_WORKFLOWS" --argjson conditional "$LOOP_CONDITIONAL_WORKFLOWS" \
+    --argjson ignored "$LOOP_IGNORED_WORKFLOWS" '{backend:$backend,checks:$checks,workflows:$workflows,conditional:$conditional,ignored:$ignored}') || return 1
+  node -e '
+    const crypto=require("node:crypto"), [config,base,head]=process.argv.slice(1);
+    const fail=m=>{console.error("Invalid remote-check policy: "+m);process.exit(1)};
+    const p=JSON.parse(config);
+    const names=(a,min=0)=>Array.isArray(a)&&a.length>=min&&a.length<=64&&new Set(a).size===a.length&&a.every(x=>typeof x==="string"&&x.length>0&&x.length<=200&&!/[\x00-\x1f\x7f]/.test(x));
+    if(!["checks","actions"].includes(p.backend)||!names(p.checks)||!names(p.workflows)||!names(p.ignored)||!Array.isArray(p.conditional)||p.conditional.length>32)fail("invalid lists/backend");
+    if(p.backend!=="actions"&&(p.ignored.length||p.conditional.length))fail("workflow selectors require Actions");
+    const seen=new Set(p.workflows);
+    for(const r of p.conditional){
+      if(!r||Object.keys(r).sort().join(",")!=="checks,paths,workflow"||!names([r.workflow],1)||!names(r.checks,1)||!Array.isArray(r.paths)||!r.paths.length||r.paths.length>32||seen.has(r.workflow))fail("invalid/duplicate conditional workflow");
+      seen.add(r.workflow);
+      if(r.paths.some(s=>typeof s!=="string"||s.length>512||!s.length||!/^[A-Za-z0-9_.*?/-]+$/.test(s)||s.split("/").some(x=>!x||x==="."||x===".."||(x.includes("**")&&x!=="**"))))fail("unsupported path pattern");
+    }
+    if(p.ignored.some(n=>seen.has(n)))fail("required workflow cannot be ignored");
+    // Memoized component matching avoids regex backtracking on repository paths.
+    const component=(p,s)=>{let i=0,j=0,star=-1,retry=0;while(j<s.length){
+      if(p[i]==="?"||p[i]===s[j]){i++;j++}else if(p[i]==="*"){star=i++;retry=j}
+      else if(star>=0){i=star+1;j=++retry}else return false;
+    }while(p[i]==="*")i++;return i===p.length};
+    const matches=(pattern,path)=>{const p=pattern.split("/"),s=path.split("/"),memo=new Map();
+      const at=(i,j)=>{const key=i+","+j;if(memo.has(key))return memo.get(key);
+        const value=i===p.length?j===s.length:p[i]==="**"?(at(i+1,j)||(j<s.length&&at(i,j+1))):
+          j<s.length&&component(p[i],s[j])&&at(i+1,j+1);memo.set(key,value);return value};
+      return at(0,0)};
+    let size=0;const chunks=[];
+    process.stdin.on("data",b=>{size+=b.length;if(size>4194304)fail("changed-path inventory exceeds 4 MiB");chunks.push(b)});
+    process.stdin.on("end",()=>{
+      const bytes=Buffer.concat(chunks);let text;
+      try{text=new TextDecoder("utf-8",{fatal:true}).decode(bytes)}catch{fail("non-UTF8 path inventory")}
+      if(text&&!text.endsWith("\0"))fail("unterminated path inventory");
+      const paths=text?text.slice(0,-1).split("\0"):[];
+      if(paths.length>10000||paths.some(x=>!x||x.length>4096||/[\x00-\x1f\x7f]/.test(x)||x.startsWith("/")||x.split("/").some(c=>!c||c==="."||c==="..")))fail("invalid/oversize path inventory");
+      const selected=p.conditional.filter(r=>r.paths.some(s=>paths.some(x=>matches(s,x))));
+      const digest=s=>crypto.createHash("sha256").update(s).digest("hex");
+      const result={requiredChecks:p.checks,requiredWorkflows:[...p.workflows,...selected.map(r=>r.workflow)],
+        conditionalChecks:selected.flatMap(r=>r.checks.map(name=>({workflow:r.workflow,name}))),ignoredWorkflows:p.ignored,
+        policyHash:digest(JSON.stringify({config:p,base,head,pathsHash:digest(bytes)}))};
+      console.log(JSON.stringify(result));
+    });
+  ' "$config" "$1" "$2"
+}
+
+resolve_check_policy() {
+  local base="$1" head="$2"
+  if [[ "$LOOP_CONDITIONAL_WORKFLOWS" == '[]' ]]; then
+    select_check_policy "$base" "$head" </dev/null
+    return $?
+  fi
+  # Ref names or malformed metadata must not become Git options/revisions.
+  [[ "$base" =~ ^[0-9a-f]{40}$ && "$head" =~ ^[0-9a-f]{40}$ ]] || return 1
+  sanitize_repository_git_config || return 1
+  git --no-replace-objects -C "$WORKSPACE_DIR" merge-base --is-ancestor "$base" "$head" || return 1
+  git --no-replace-objects -C "$WORKSPACE_DIR" diff --no-ext-diff --no-textconv --no-renames --name-only -z "$base" "$head" -- |
+    select_check_policy "$base" "$head"
+}
+
 remote_checks_ready() {
   local snapshot="$1"
   jq -e --argjson required "$LOOP_REQUIRED_CHECKS" '
-    (.statusCheckRollup // []) as $checks |
+    (.statusCheckRollup // []) as $checks | (.checkPolicy // {}) as $policy |
     ($required | length) > 0 and all($required[]; . as $name |
       [$checks[] | select((.name // .context) == $name)] as $matches |
       ($matches | length) == 1 and all($matches[];
         (.status == "COMPLETED" and .conclusion == "SUCCESS") or .state == "SUCCESS"))
+    and all(($policy.requiredWorkflows // [])[]; . as $name |
+      [$checks[] | select(.name == ("workflow:" + $name))] as $matches |
+      ($matches|length)==1 and all($matches[]; .status=="COMPLETED" and .conclusion=="SUCCESS"))
+    and all(($policy.conditionalChecks // [])[]; . as $wanted |
+      [$checks[] | select(.name==$wanted.name and .workflow==$wanted.workflow)] as $matches |
+      ($matches|length)==1 and all($matches[]; .status=="COMPLETED" and .conclusion=="SUCCESS"))
     and all($checks[];
       (.status == "COMPLETED" and (.conclusion == "SUCCESS" or .conclusion == "SKIPPED" or .conclusion == "NEUTRAL")) or .state == "SUCCESS")
   ' <<<"$snapshot" >/dev/null
 }
 
 read_pr_snapshot() {
-  local branch="$1" metadata runs jobs all_jobs='[]' run id attempt status conclusion name
+  local branch="$1" metadata runs jobs all_jobs='[]' run id attempt status conclusion name policy base
   if [[ "$LOOP_CHECK_BACKEND" == checks ]]; then
-    gh pr view "$branch" --repo "$REPO_SLUG" \
-      --json state,isDraft,headRefOid,baseRefOid,body,mergeable,statusCheckRollup
+    metadata=$(gh pr view "$branch" --repo "$REPO_SLUG" \
+      --json state,isDraft,headRefOid,baseRefOid,body,mergeable,statusCheckRollup) || return 1
+    if [[ "$(jq -r .state <<<"$metadata")" == CLOSED || "$(jq -r .state <<<"$metadata")" == MERGED ]]; then
+      printf '%s\n' "$metadata"; return 0
+    fi
+    policy=$(resolve_check_policy "$(jq -er .baseRefOid <<<"$metadata")" "$(jq -er .headRefOid <<<"$metadata")") || return 1
+    # Workflow names are not synthesized by the GraphQL backend.
+    jq --argjson policy "$policy" '. + {checkPolicy:($policy + {requiredWorkflows:[]})}' <<<"$metadata"
     return $?
   fi
   # Some publisher Apps can read Actions but not GraphQL check runs. Keep the
   # same exact-head semantics; no missing-permission shortcut to green.
   metadata=$(gh pr view "$branch" --repo "$REPO_SLUG" --json state,isDraft,headRefOid,baseRefOid,body,mergeable) || return 1
+  if [[ "$(jq -r .state <<<"$metadata")" == CLOSED || "$(jq -r .state <<<"$metadata")" == MERGED ]]; then
+    printf '%s\n' "$metadata"; return 0
+  fi
   local head
   head=$(jq -er .headRefOid <<<"$metadata") || return 1
+  base=$(jq -er .baseRefOid <<<"$metadata") || return 1
+  policy=$(resolve_check_policy "$base" "$head") || return 1
   runs=$(gh api --method GET "repos/${REPO_SLUG}/actions/runs" -f head_sha="$head" -f branch="$branch" \
     -f event=pull_request -F per_page=100) || return 1
-  jq -e '.total_count <= 100' <<<"$runs" >/dev/null || return 1
+  jq -e '(.total_count|type)=="number" and .total_count>=0 and .total_count<=100 and
+    (.workflow_runs|type)=="array" and (.workflow_runs|length)==.total_count' <<<"$runs" >/dev/null || return 1
   runs=$(jq -c --arg head "$head" --arg branch "$branch" '[.workflow_runs[] |
     select(.head_sha == $head and .head_branch == $branch and .event == "pull_request")] |
     group_by(.workflow_id) | map(max_by([.run_number,.run_attempt,.id]))' <<<"$runs") || return 1
-  if ! jq -e --argjson required "$LOOP_REQUIRED_WORKFLOWS" '
+  if ! jq -e --argjson required "$(jq -c .requiredWorkflows <<<"$policy")" '
     . as $runs | ($required|length)>0 and all($required[]; . as $name | any($runs[]; .name == $name))
   ' <<<"$runs" >/dev/null; then
     # Missing workflow is pending, not a successful absence.
@@ -1867,14 +1953,20 @@ read_pr_snapshot() {
     status=$(jq -r .status <<<"$run"); conclusion=$(jq -r '.conclusion // ""' <<<"$run")
     name=$(jq -r .name <<<"$run")
     jobs=$(gh api "repos/${REPO_SLUG}/actions/runs/${id}/attempts/${attempt}/jobs?per_page=100") || return 1
-    jq -e '.total_count <= 100' <<<"$jobs" >/dev/null || return 1
-    jobs=$(jq -c '[.jobs[] | {name,status:(.status|ascii_upcase),conclusion:((.conclusion // "")|ascii_upcase)}]' <<<"$jobs") || return 1
+    jq -e '(.total_count|type)=="number" and .total_count>=0 and .total_count<=100 and
+      (.jobs|type)=="array" and (.jobs|length)==.total_count' <<<"$jobs" >/dev/null || return 1
+    jobs=$(jq -c --arg workflow "$name" '[.jobs[] | {name,workflow:$workflow,status:(.status|ascii_upcase),conclusion:((.conclusion // "")|ascii_upcase)}]' <<<"$jobs") || return 1
+    if jq -e --arg name "$name" '.ignoredWorkflows | index($name)!=null' <<<"$policy" >/dev/null; then
+      # Never hide a universal required job behind an administrative exclusion.
+      jq -e --argjson required "$LOOP_REQUIRED_CHECKS" 'all(.[]; .name as $name | $required | index($name)==null)' <<<"$jobs" >/dev/null || return 1
+      continue
+    fi
     # Workflow status also gates readiness (e.g. canceled before jobs exist).
     all_jobs=$(jq -cn --argjson old "$all_jobs" --argjson jobs "$jobs" --arg name "workflow:${name}" \
       --arg status "${status^^}" --arg conclusion "${conclusion^^}" \
       '$old + $jobs + [{name:$name,status:$status,conclusion:$conclusion}]') || return 1
   done < <(jq -c '.[]' <<<"$runs")
-  jq --argjson checks "$all_jobs" '. + {statusCheckRollup:$checks}' <<<"$metadata"
+  jq --argjson checks "$all_jobs" --argjson policy "$policy" '. + {statusCheckRollup:$checks,checkPolicy:$policy}' <<<"$metadata"
 }
 
 archive_pending() {
@@ -1924,6 +2016,9 @@ resume_pending_publication() {
     if [[ "$(jq -r .headRefOid <<<"$snapshot")" != "$head" ||
         "$(jq -r .baseRefOid <<<"$snapshot")" != "$base" || "$(jq -r .body <<<"$snapshot")" != "$body" ]]; then
       reason="PR base, head or body changed; bound evidence invalidated"
+    elif [[ -z "$(jq -r '.checkPolicy.policyHash // empty' <<<"$pending")" ||
+        "$(jq -r .checkPolicy.policyHash <<<"$pending")" != "$(jq -r .checkPolicy.policyHash <<<"$snapshot")" ]]; then
+      reason="Pinned remote-check policy changed or missing; explicit retry required"
     elif [[ "$(jq length <<<"$LOOP_REQUIRED_CHECKS")" == 0 ]]; then
       reason="No explicit required-check policy configured; draft only"
     elif [[ "$(jq -r .verified <<<"$pending")" != "$head" || "$(jq -r .reviewed <<<"$pending")" != "$head" ||

@@ -320,7 +320,7 @@ gh() {
       {"id":2,"workflow_id":1,"run_number":2,"run_attempt":1,"name":"CI","head_sha":"head-a","head_branch":"feature","event":"pull_request","status":"completed","conclusion":"success"},
       {"id":3,"workflow_id":2,"run_number":1,"run_attempt":1,"name":"Governance","head_sha":"head-a","head_branch":"feature","event":"pull_request","status":"completed","conclusion":"success"},
       {"id":4,"workflow_id":3,"run_number":1,"run_attempt":1,"name":"Other head","head_sha":"head-b","head_branch":"feature","event":"pull_request","status":"completed","conclusion":"failure"}]}'
-    [[ "$ACTIONS_MODE" != missing ]] || data=$(jq '.workflow_runs |= map(select(.id != 3))' <<<"$data")
+    [[ "$ACTIONS_MODE" != missing ]] || data=$(jq '.workflow_runs |= map(select(.id != 3)) | .total_count=(.workflow_runs|length)' <<<"$data")
     echo "$data"; return 0
   fi
   if [[ "$*" == *'/jobs?'* ]]; then

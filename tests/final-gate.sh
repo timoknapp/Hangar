@@ -20,6 +20,7 @@ fi
   node --check tests/fixtures/squad-capability-mcp.mjs
 [[ -f tests/fixtures/process-secret-scan.py ]] && \
   python3 -c 'from pathlib import Path; p=Path("tests/fixtures/process-secret-scan.py"); compile(p.read_text(), str(p), "exec")'
+python3 -c 'from pathlib import Path; p=Path("tests/check-policy.test.py"); compile(p.read_text(), str(p), "exec")'
 
 # --- C syntax (Linux only) ---
 if [[ "$(uname -s)" == "Linux" ]]; then
@@ -90,3 +91,4 @@ bash tests/pr-guard.test.sh
 bash tests/worker-loop.test.sh
 bash tests/quality-lifecycle.test.sh
 bash tests/git-boundary.test.sh
+python3 tests/check-policy.test.py

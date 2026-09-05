@@ -124,6 +124,9 @@ HEADER
     local LOOP_CHECK_BACKEND LOOP_REQUIRED_WORKFLOWS
     LOOP_CHECK_BACKEND=$(jq -r --arg w "$WORKER_ID" '.[$w].loop.checkBackend // "checks"' "$REPOS_JSON")
     LOOP_REQUIRED_WORKFLOWS=$(jq -c --arg w "$WORKER_ID" '.[$w].loop.requiredWorkflows // []' "$REPOS_JSON")
+    local LOOP_CONDITIONAL_WORKFLOWS LOOP_IGNORED_WORKFLOWS
+    LOOP_CONDITIONAL_WORKFLOWS=$(jq -c --arg w "$WORKER_ID" '.[$w].loop.conditionalWorkflows // []' "$REPOS_JSON")
+    LOOP_IGNORED_WORKFLOWS=$(jq -c --arg w "$WORKER_ID" '.[$w].loop.ignoredWorkflows // []' "$REPOS_JSON")
     local LOOP_PROFILE_DIR
     LOOP_PROFILE_DIR=$(jq -r --arg w "$WORKER_ID" '.[$w].loop.profileDir // ""' "$REPOS_JSON")
 
@@ -170,6 +173,8 @@ HEADER
       - $(yaml_quote "LOOP_MAX_REVIEW_BYTES=${LOOP_MAX_REVIEW_BYTES}")
       - $(yaml_quote "LOOP_CHECK_BACKEND=${LOOP_CHECK_BACKEND}")
       - $(yaml_quote "LOOP_REQUIRED_WORKFLOWS=${LOOP_REQUIRED_WORKFLOWS}")
+      - $(yaml_quote "LOOP_CONDITIONAL_WORKFLOWS=${LOOP_CONDITIONAL_WORKFLOWS}")
+      - $(yaml_quote "LOOP_IGNORED_WORKFLOWS=${LOOP_IGNORED_WORKFLOWS}")
       - $(yaml_quote "LOOP_PROFILE_DIR=${LOOP_PROFILE_DIR}")
     ports:
       - $(yaml_quote "${bind_address_value}:\${TTYD_PORT_W${NUM}:-${TTYD_PORT}}:8080")

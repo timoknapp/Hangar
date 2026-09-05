@@ -245,6 +245,8 @@ write_workspace_export() {
   write_workspace_export LOOP_MAX_REVIEW_BYTES "${LOOP_MAX_REVIEW_BYTES:-262144}"
   write_workspace_export LOOP_CHECK_BACKEND "${LOOP_CHECK_BACKEND:-checks}"
   write_workspace_export LOOP_REQUIRED_WORKFLOWS "${LOOP_REQUIRED_WORKFLOWS:-[]}"
+  write_workspace_export LOOP_CONDITIONAL_WORKFLOWS "${LOOP_CONDITIONAL_WORKFLOWS:-[]}"
+  write_workspace_export LOOP_IGNORED_WORKFLOWS "${LOOP_IGNORED_WORKFLOWS:-[]}"
   write_workspace_export LOOP_PROFILE_DIR "${LOOP_PROFILE_DIR:-}"
 } > /home/$SESSION_USER/.workspace_env
 chown "$SESSION_USER":"$SHARED_GROUP" /home/$SESSION_USER/.workspace_env
