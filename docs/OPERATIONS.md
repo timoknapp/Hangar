@@ -280,6 +280,10 @@ ls /workspace/
 git -C /workspace/<repo> log --oneline -5
 ```
 
+**Evidence failures are not a reset instruction.** Before using either reset recipe below,
+read [When Git accepts the repository but Hangar blocks evidence](#when-git-accepts-the-repository-but-hangar-blocks-evidence).
+For the known C1 history restriction, preserve the checkout; resetting or re-cloning is not a remedy.
+
 ### Hard reset (without destroying the volume)
 
 ```bash
@@ -552,3 +556,24 @@ WORKER_IMAGE=hangar-worker:ci bash tests/agent-launch.container.sh
 This disposable, network-disabled test mounts no real credentials and exercises the exact production `run_agent_command` path.
 Local mocked tests and C compilation are not substitutes.
 The optional Copilot auth preflight separately probes the configured reviewer model; an auth/nonce response is not substantive code review.
+
+
+### Known Git compatibility limit (C1)
+
+**Known Git compatibility limit — optional historical commit headers (C1).** Hangar's evidence guard supports a narrower commit-header contract than Git itself; it does not promise admission of every repository accepted by `git fsck`, including `git fsck --strict`. At this release's reviewed parser, optional extension header names must begin with an ASCII letter and continue with ASCII letters, digits or hyphens, followed by a space; names containing an underscore, such as `x_legacy`, are unsupported. An otherwise valid, correctly hash-addressed historical commit with `x_legacy imported` is accepted by Git 2.43.0 but rejected by Hangar. The corresponding `x-legacy imported` control is admitted. This is an observed compatibility/availability limitation, not evidence of repository corruption or an integrity bypass; its prevalence in real repositories is unknown.
+
+Every ancestor commit of HEAD and required input roots is structurally checked, not only the current commit or current files. Consequently, an unsupported optional header in old history can block task admission and persisted-workspace startup even when the current tree is ordinary. Making a new descendant commit, restarting, or re-cloning the same history does not remove that restriction. An unsupported object that is not an ancestor of any required root does not cause this C1 block merely by remaining in the object store.
+
+This restriction is explicitly accepted for the **supported-contract generic release**, not as a claim of universal Git compatibility. Repositories whose required ancestry contains unsupported headers must not be onboarded to this version by bypassing the guard. Their owners should keep them off this worker version until a separately reviewed parser change supports their history. Required-object hashing, replacement independence, index/raw-byte binding, fail-closed admission and credential separation remain mandatory.
+
+### When Git accepts the repository but Hangar blocks evidence
+
+`Repository evidence blocked` and the persisted-startup message `failed to sanitize persisted repository Git configuration` do not, by themselves, diagnose damaged Git objects or a bad Git configuration. One known cause is a Git-accepted optional header such as `x_legacy` in a required ancestor commit (C1). The generic error intentionally withholds source bytes, object identifiers and attacker-controlled paths.
+
+1. Stop or restrict the affected worker and preserve its checkout, unpublished work, original objects, index flags and logs. Treat this as an infrastructure/unsupported-input block, not a product-code test failure or a request for the coding model to repair history.
+2. Have an authorized operator inspect an isolated, credential-free copy with trusted Git and the same version of Hangar's unprivileged evidence guard. Check metadata and the complete required ancestry, not just HEAD's message or current files. Keep commit payloads and diagnostics local; do not attach private history, credentials or object-store dumps to a public issue. A successful `git fsck --strict` does **not** establish Hangar compatibility.
+3. Do **not** apply the generic workspace reset, hard-reset/clean, volume-wipe or re-clone recipes as a C1 remedy. A new clone preserving the same ancestry remains unsupported. Do not prune unreachable objects, clear index masks, use shallow/sparse history, install replacement refs, disable checks, weaken the unprivileged/empty-environment boundary or supply publisher credentials to make admission pass. None is an approved C1 workaround.
+4. For a repository confirmed to contain C1 in required ancestry, keep it off this worker version and request a narrowly scoped compatibility correction. This release offers no in-place lossless C1 repair. Rewriting or dropping history changes commit IDs and can invalidate signatures, references and approvals; it is not an automatic or recommended remediation. Any such migration is a separate repository-owner decision, outside this release's acceptance.
+5. After an authorized supported correction or repository change, rerun admission, verification and independent review against the new exact source/head. Never reuse old approval or publication receipts for changed evidence. Never materialize excluded sensitive source solely to pass full-tree binding.
+
+This C1 note takes precedence over generic “reset corrupted workspace” advice for evidence failures. Existing full SHA-1/regular-file checkout requirements, unsupported linked/sparse/shallow/alternate/promisor repositories, tracked links/submodules, masked indexes, normalized worktree bytes and resource bounds still apply; see `tests/README.md`, **Immutable local evidence boundary**, **Required object scope and availability**, and **Evidence recovery**. No full-history audit, universal Git compatibility, runtime/image, credential-path or downstream deployment acceptance is implied.

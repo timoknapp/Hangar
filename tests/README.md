@@ -182,6 +182,13 @@ the vulnerable control must honor replacements; production passes its own flag.
 
 ### Evidence recovery
 
+A Git-accepted optional historical header such as `x_legacy` can still block task
+admission and persisted-workspace startup. This is a known unsupported-history
+limitation, not proof of corruption; `git fsck --strict` is not a compatibility
+certificate. See the concrete [C1 compatibility and operating warning](../docs/OPERATIONS.md#known-git-compatibility-limit-c1)
+before attempting any recovery. Resetting or re-cloning the same history does not
+resolve it.
+
 On `Repository evidence blocked`, stop/restrict the worker and **preserve the
 checkout, object files, index flags and logs** for inspection. No automatic gc,
 prune, reset, clean, unstage or deletion is performed. The fixed admission does
