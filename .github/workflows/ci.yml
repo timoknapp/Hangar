@@ -15,11 +15,18 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v7
+        with:
+          persist-credentials: false
 
       - name: Install system dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends jq shellcheck
+          # Evidence checks use /usr/bin/node with an empty environment, not the runner's PATH Node.
+          sudo apt-get install -y --no-install-recommends jq shellcheck nodejs
+
+      - name: Verify fixed-path Node prerequisite
+        run: |
+          /usr/bin/env -i PATH=/usr/bin:/bin /usr/bin/timeout 10 /usr/bin/node --version
 
       - name: ShellCheck lint
         run: |

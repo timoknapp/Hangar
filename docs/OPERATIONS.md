@@ -18,6 +18,7 @@
 10. [Rebuilding worker images](#10-rebuilding-worker-images)
 11. [Debugging worker sessions](#11-debugging-worker-sessions)
 12. [Monitoring and alerting](#12-monitoring-and-alerting)
+13. [Quality policy and recovery](#13-quality-policy-and-recovery)
 
 ---
 
@@ -26,7 +27,7 @@
 The normal operating pattern once Hangar is running:
 
 1. **Open an issue** on the repository assigned to a worker.
-2. **Apply the `squad` label** to put it on the worker queue.
+2. **Apply the `squad` label** and any configured required approval labels to put it on the worker queue.
 3. **Wait** — the worker claims the issue within one `POLL_INTERVAL` (default: 60 seconds).
 4. **Watch progress** via `docker logs -f squad-worker-1` or the Cockpit terminal.
 5. **Review the PR** when it appears — treat it like any externally submitted patch.
@@ -279,6 +280,10 @@ ls /workspace/
 git -C /workspace/<repo> log --oneline -5
 ```
 
+**Evidence failures are not a reset instruction.** Before using either reset recipe below,
+read [When Git accepts the repository but Hangar blocks evidence](#when-git-accepts-the-repository-but-hangar-blocks-evidence).
+For the known C1 history restriction, preserve the checkout; resetting or re-cloning is not a remedy.
+
 ### Hard reset (without destroying the volume)
 
 ```bash
@@ -418,3 +423,157 @@ gh pr list --repo your-org/your-repo \
 ---
 
 > Back to [README](../README.md) · [Install](INSTALL.md) · [Architecture](ARCHITECTURE.md)
+
+## 13. Quality policy and recovery
+
+### Operator-owned repository policy
+
+Configure identical gate/admission fields for every worker sharing a repository.
+`requiredLabels` is an array of extra approval labels; its default is empty for generic compatibility.
+Labels are necessary controls, not proof of who approved or permission to expand a design-only issue into product implementation.
+Removing approval, closing the issue, changing its title/body or replacing/deleting a claim cancels publication/readiness.
+`unattendedLabels` defaults to `["loop:auto"]`; this label means self-generated work, not all unattended work.
+Set it to `["squad"]` to conservatively budget all queued work without changing existing producers.
+Otherwise route scheduled/dispatched producers through the same queue and apply a shared configured unattended label.
+`maxPrsPerDay` counts attempts (including revisions and failures), not finished PRs.
+
+`maxActiveIssues: 1` uses one atomic repository WIP ref, retained across draft, ready and failed work until the issue closes.
+New tasks wait behind existing failed/processing/pending issues and worker PRs.
+Explicit revisions can repair the same WIP issue; WIP does not authorize stealing its active issue claim.
+Do not delete `squad-claims/` or `squad-budget/` refs during general branch cleanup.
+
+`requiredChecks` lists exact remote check names selected by the operator from authoritative workflows.
+The list must include applicable scope/approval and UI-evidence checks, not just compilation.
+Missing/duplicate/pending required checks, API permission failures, local gate evidence gaps and base/head/body drift prevent Ready.
+An empty list safely leaves work draft-only; do not interpret inaccessible branch-protection APIs as no required checks.
+When an App can read Actions but not check rollups, explicitly select `checkBackend: "actions"` and configure
+`requiredWorkflows` (workflow display names) in addition to `requiredChecks` (job names).
+PR metadata resolves the number using `gh pr view --json number`, then obtains base/head SHAs via
+`gh api repos/OWNER/REPO/pulls/NUMBER`; this avoids the unsupported `--json baseRefOid` field in older gh releases.
+Actions mode never requests GraphQL `statusCheckRollup`. Checks mode remains explicit and fails on unavailable rollup access.
+This path filters exact head, branch and pull-request event, uses the latest run/attempt per workflow,
+and fails closed on denied APIs or responses exceeding its explicit 100-run/job bounds.
+All emitted workflows/jobs remain blocking unless an exact administrative workflow is explicitly excluded.
+For Actions, optional operator-owned `conditionalWorkflows` adds path-selected requirements:
+
+```json
+{
+  "conditionalWorkflows": [
+    {"workflow": "Dependency Review", "checks": ["dependency-review"], "paths": ["package.json", "packages/**/package.json"]}
+  ],
+  "ignoredWorkflows": ["Release Notes"]
+}
+```
+
+Both default to `[]`; no repository-specific selector is inferred. Copy reviewed trigger paths from the trusted policy,
+not a candidate workflow or PR prose. Paths are case-sensitive, repository-relative positive patterns:
+`*` and `?` match within one component; a complete `**` component matches zero or more directories/components.
+Negation, brackets, braces, backslashes, embedded `**` and parent traversal are rejected. Every matched workflow and its
+workflow-qualified jobs must appear exactly once and succeed, including runs that report SKIPPED/NEUTRAL.
+An unrelated absent conditional workflow is N/A; an emitted non-excluded failure still blocks.
+The selector reads the complete immutable base/head diff with rename detection disabled, so deletions and renames
+out of selected paths still apply. Unsupported/non-UTF8, over-10,000-path or over-4-MiB inventories fail closed.
+No repository script or workflow YAML executes as publisher. Git metadata is sanitized first.
+Missing local immutable commits or changed policy prevents readiness; no guessed fetch/ref fallback occurs.
+
+`ignoredWorkflows` accepts exact administrative display names only. Required universal/conditional workflows cannot
+be excluded; an excluded workflow containing a universal required job fails closed rather than hiding that job.
+Its jobs API must remain readable. Other workflows, including unknown failures, retain conservative blocking.
+These workflow selectors require the Actions backend and are propagated from `repos.json` through Compose and the entrypoint.
+The selected requirements plus config, base/head and complete path hash are pinned in the pending receipt and compared
+on every poll. Old receipts without policy binding block draft-only until explicit recovery; do not resume them as green.
+Do not label workflow names as job names or assume an absent applicable workflow means N/A.
+No merge is performed.
+
+Ready is a persisted `promoting` phase: queued checks from `ready_for_review` wait in the normal loop, not an undo/redo loop.
+A task explicitly requesting draft remains `waiting-human`, not failed; its WIP persists.
+A closed/merged pending PR releases only its owned coordination refs without attempting a draft mutation.
+
+`maxRetries` is one shared code-correction allowance, not a fresh allowance per nested gate.
+`maxTaskSeconds` defaults to 3600 and covers initial implementation, verification, review, corrections and pending remote checks.
+Set an explicit longer deadline for slow CI rather than relying on repeated outer attempts.
+Infrastructure failures and profile exit 78 (policy/evidence blocked) never request code corrections.
+Baseline failures block before implementation instead of inviting unrelated test repairs.
+
+### Optional private instance profile
+
+Set `profileDir` to an absolute operator-owned directory, mounted read-only into the worker at the same path.
+The directory and its ancestors must be root-owned and not group/world-writable; profile files are root-owned 0444 or 0644.
+Never put it in the checkout or let an issue select a publisher command.
+The fixed interface is:
+
+- `implementer.md`: bounded supplemental instructions for one implementer.
+- `reviewer.md`: bounded supplemental reviewer requirements.
+- `review-context.txt`: one relative trusted-base rule path per line; blank/comment lines ignored.
+- `review-assets.txt`: optional relative image-deliverable directories, one per line with a trailing slash.
+  Blank/comment lines are ignored; absent file means no image-link rewriting.
+  This is data only, not an upload command or proof of image authenticity.
+- `verify.sh`: invoked as `bash <profile>/verify.sh <pinned-base-sha> <current-head-sha>` ONLY through the credential-free coding boundary.
+  Helpers inside the profile execute as coding code too, never as publisher.
+  Exit 78 means policy/evidence blocked; any applicable UI check must fail closed when real reviewer evidence is absent.
+
+### Summary and screenshot handoff
+
+The implementer writes untracked `.squad/pr-summary.md` with exactly `Problem`, `Root Cause`, `Solution`, `Testing`, `Future Work` H2 headings.
+Corrections regenerate the cumulative summary; the publisher removes scratch before committing/verifying.
+The critic reviews the actual final body alongside the complete base-pinned diff and active trusted rules.
+Nested `### UI evidence` inside Testing survives; top-level extra sections are not an alternative handoff.
+Non-UI work states a scope-based `UI: N/A`; do not invent screenshots.
+The private profile selects any explicitly approved image-deliverable directories; no repository-specific path ships in Hangar.
+Matching relative PNG links become immutable repository blob links bound to the final head; other links are unchanged.
+Record capture source commit plus a source-tree hash excluding only approved image assets to avoid self-referential commit hashes.
+A Markdown image or agent-writable manifest does not prove image authenticity, accessibility or visual review.
+The instance verifier/required remote checks must supply those project-specific proofs before Ready; otherwise keep UI work blocked.
+Hangar does not upload images publicly or bypass repository asset policy.
+
+### Evidence and explicit recovery
+
+Publisher state defaults to `/home/copilot/.local/share/hangar-loop` (private 0700 directory, persisted copilot-data volume).
+Logs retain bounded redacted tails with phase/base/head/exit; per-file evidence and receipts are 0600 and outside the checkout.
+A single `pending.json` lets normal polling continue exact-head checks after restart, without another service or model run.
+Failed tasks get `squad:failed`, never `squad:done`, and consume `squad:revision`.
+Re-add revision only after reviewing the failure and explicitly recovering its workspace/branch; labels do not fix dirty files or stale ancestry.
+No automatic reset, clean, branch deletion, rebase or force-unlock occurs.
+
+Before recovering an orphaned claim: stop/identify its owning worker; archive its private state and local branch/worktree; inspect its nonce/OID and issue state.
+Use an expected-OID lease if releasing a verified abandoned claim, never an unconditional REST deletion of a possibly replaced owner.
+A failed terminal GitHub write retains ownership and stops admission rather than repeatedly rerunning the implementer.
+If a prepared base no longer matches remote, explicitly rebase/reconcile and rerun verification/review; old evidence cannot be reused.
+Local unpublished revision commits differing from the remote are deliberately blocked from implicit replacement.
+
+### Mandatory rollout proof for launcher changes
+
+The compiled root-owned `agent-launch` is not setuid and only the publisher can invoke its sudo rule.
+It needs CAP_SETPCAP long enough to empty the bounding set, plus the existing fixed UID/GID drop authority.
+It does not pass root/capabilities, inherited environment, arbitrary file descriptors or publisher credentials to AI/test code.
+Do not “repair” a missing capability by deleting no-new-privileges or bounding-set enforcement.
+Prove the candidate image in isolation first:
+
+```bash
+WORKER_IMAGE=hangar-worker:ci bash tests/agent-launch.container.sh
+```
+
+This disposable, network-disabled test mounts no real credentials and exercises the exact production `run_agent_command` path.
+Local mocked tests and C compilation are not substitutes.
+The optional Copilot auth preflight separately probes the configured reviewer model; an auth/nonce response is not substantive code review.
+
+
+### Known Git compatibility limit (C1)
+
+**Known Git compatibility limit — optional historical commit headers (C1).** Hangar's evidence guard supports a narrower commit-header contract than Git itself; it does not promise admission of every repository accepted by `git fsck`, including `git fsck --strict`. At this release's reviewed parser, optional extension header names must begin with an ASCII letter and continue with ASCII letters, digits or hyphens, followed by a space; names containing an underscore, such as `x_legacy`, are unsupported. An otherwise valid, correctly hash-addressed historical commit with `x_legacy imported` is accepted by Git 2.43.0 but rejected by Hangar. The corresponding `x-legacy imported` control is admitted. This is an observed compatibility/availability limitation, not evidence of repository corruption or an integrity bypass; its prevalence in real repositories is unknown.
+
+Every ancestor commit of HEAD and required input roots is structurally checked, not only the current commit or current files. Consequently, an unsupported optional header in old history can block task admission and persisted-workspace startup even when the current tree is ordinary. Making a new descendant commit, restarting, or re-cloning the same history does not remove that restriction. An unsupported object that is not an ancestor of any required root does not cause this C1 block merely by remaining in the object store.
+
+This restriction is explicitly accepted for the **supported-contract generic release**, not as a claim of universal Git compatibility. Repositories whose required ancestry contains unsupported headers must not be onboarded to this version by bypassing the guard. Their owners should keep them off this worker version until a separately reviewed parser change supports their history. Required-object hashing, replacement independence, index/raw-byte binding, fail-closed admission and credential separation remain mandatory.
+
+### When Git accepts the repository but Hangar blocks evidence
+
+`Repository evidence blocked` and the persisted-startup message `failed to sanitize persisted repository Git configuration` do not, by themselves, diagnose damaged Git objects or a bad Git configuration. One known cause is a Git-accepted optional header such as `x_legacy` in a required ancestor commit (C1). The generic error intentionally withholds source bytes, object identifiers and attacker-controlled paths.
+
+1. Stop or restrict the affected worker and preserve its checkout, unpublished work, original objects, index flags and logs. Treat this as an infrastructure/unsupported-input block, not a product-code test failure or a request for the coding model to repair history.
+2. Have an authorized operator inspect an isolated, credential-free copy with trusted Git and the same version of Hangar's unprivileged evidence guard. Check metadata and the complete required ancestry, not just HEAD's message or current files. Keep commit payloads and diagnostics local; do not attach private history, credentials or object-store dumps to a public issue. A successful `git fsck --strict` does **not** establish Hangar compatibility.
+3. Do **not** apply the generic workspace reset, hard-reset/clean, volume-wipe or re-clone recipes as a C1 remedy. A new clone preserving the same ancestry remains unsupported. Do not prune unreachable objects, clear index masks, use shallow/sparse history, install replacement refs, disable checks, weaken the unprivileged/empty-environment boundary or supply publisher credentials to make admission pass. None is an approved C1 workaround.
+4. For a repository confirmed to contain C1 in required ancestry, keep it off this worker version and request a narrowly scoped compatibility correction. This release offers no in-place lossless C1 repair. Rewriting or dropping history changes commit IDs and can invalidate signatures, references and approvals; it is not an automatic or recommended remediation. Any such migration is a separate repository-owner decision, outside this release's acceptance.
+5. After an authorized supported correction or repository change, rerun admission, verification and independent review against the new exact source/head. Never reuse old approval or publication receipts for changed evidence. Never materialize excluded sensitive source solely to pass full-tree binding.
+
+This C1 note takes precedence over generic “reset corrupted workspace” advice for evidence failures. Existing full SHA-1/regular-file checkout requirements, unsupported linked/sparse/shallow/alternate/promisor repositories, tracked links/submodules, masked indexes, normalized worktree bytes and resource bounds still apply; see `tests/README.md`, **Immutable local evidence boundary**, **Required object scope and availability**, and **Evidence recovery**. No full-history audit, universal Git compatibility, runtime/image, credential-path or downstream deployment acceptance is implied.

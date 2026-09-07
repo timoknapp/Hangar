@@ -22,7 +22,7 @@ if [[ -z "$groups" ]]; then
 fi
 
 # Fields that MUST be equivalent within a group (autonomous excluded)
-EQUIV_FIELDS=(critic criticModel criticRubric verify maxRetries maxPrsPerDay maxOpenAutoIssues workScope implementer)
+EQUIV_FIELDS=(critic criticModel criticRubric verify maxRetries maxPrsPerDay maxOpenAutoIssues workScope implementer requiredLabels unattendedLabels requiredChecks maxActiveIssues maxTaskSeconds maxReviewBytes profileDir checkBackend requiredWorkflows conditionalWorkflows ignoredWorkflows)
 
 FAIL=0
 while IFS= read -r group; do

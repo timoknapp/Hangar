@@ -57,8 +57,8 @@ The operational layer that keeps quality high and blast radius small:
 | --- | --- |
 | **Atomic claims** | A Git ref (`squad-claims/issue-N`) is created atomically before the visible `squad:processing` label; only one worker wins |
 | **Independent critic** | A second Copilot session — optionally running a different model — reviews the diff *without* the implementer's context |
-| **Verify hook** | Runs your own test suite or a custom script before publication; failures trigger bounded correction and then a flagged draft |
-| **Autonomous budget / draft safety** | `maxPrsPerDay` caps daily `loop:auto` PR attempts; manual issues and revisions bypass it |
+| **Verify hook** | Runs your own test suite or a custom script before publication; code failures allow bounded correction; infrastructure/policy failures block without code repair |
+| **Autonomous budget / draft safety** | `maxPrsPerDay` caps configured unattended attempts, including revisions; WIP1 is optional |
 | **Credential isolation** | OS permissions protect publisher credentials; a native guard protects the model-token process tree and strips secrets from child tools |
 
 ---
@@ -135,7 +135,7 @@ Edit `repos.json` — one entry per worker:
 This is Hangar's **recommended guarded starter profile**, not the raw compatibility defaults:
 it enables automatic verification, the independent critic, full Squad implementation, and a
 two-PR daily safety cap for autonomous `loop:auto` work. Human-created `squad` issues do not
-consume that budget. The [configuration reference](#reposjson-fields) lists the fallback defaults
+consume that budget by default; set `unattendedLabels: ["squad"]` to conservatively budget all queued work, including revisions. The [configuration reference](#reposjson-fields) lists the fallback defaults
 used when fields are omitted.
 
 ### 4. Initialize Squad in the target repository
@@ -164,8 +164,10 @@ configuration as trusted code. See the
 Docker now shows one `hangar-fleet` Compose project containing the trusted `hangar` workstation
 and every `squad-worker-N` service. Workers poll for open issues carrying the `squad` label. With
 the guarded starter profile above, a worker claims, implements, verifies, independently reviews,
-and opens a ready PR or clearly flagged draft. If you disable verification or the critic, those
-stages are skipped as documented in the configuration reference.
+and opens a draft PR only after local gates pass.
+Ready additionally requires current-head remote checks from an explicit `requiredChecks` policy.
+Disabled verification/critic, missing permissions or absent required-check policy never establish Ready.
+See [quality policy and recovery](docs/OPERATIONS.md#13-quality-policy-and-recovery).
 
 > **Loopback-only default.** Interactive SSH/ttyd use ports 2222/7681; worker SSH/ttyd use
 > 2231+/7691+. All bind to `127.0.0.1` unless explicitly overridden. Do not expose these ports
@@ -250,7 +252,8 @@ sequenceDiagram
         Critic-->>Worker: APPROVE / REQUEST_CHANGES / unavailable
         Note over Worker,Critic: Critic-driven fixes are fully re-verified
     end
-    Worker->>GH: publisher pushes branch and creates ready or draft PR
+    Worker->>GH: publisher pushes branch and creates draft PR
+    Worker->>GH: Recheck head, body, approval and required checks before Ready
     Note over GH: Human reviews and merges
 ```
 
@@ -263,52 +266,26 @@ cycle and each operational branch. They are collapsed by default to keep the REA
 
 ```mermaid
 flowchart TD
-    Wake([Worker wakes for a poll cycle]) --> Revision{Revision issue waiting?}
-    Revision -->|yes| ClaimRevision[Atomically claim issue ref<br/>checkout existing PR branch]
-    Revision -->|no| NewIssue{Queued squad issue waiting?<br/>manual first}
+    Wake([Production-path canary]) --> Pending{Pending publication?}
+    Pending -->|yes| Checks[Read exact-head checks and approval]
+    Pending -->|no| Admission[One admission point: approval, claim, WIP, attempt budget]
+    Admission --> Base[Fresh clean pinned base and baseline verification]
+    Base -->|pass| Implement[One implementer]
+    Base -->|failure| Blocked[Blocked; retain work; consume revision]
+    Implement --> Verify[Verify exact head]
+    Verify -->|code regression and shared budget left| Fix[Minimal correction plus new summary]
+    Fix --> Verify
+    Verify -->|infra, policy or exhausted| Blocked
+    Verify -->|pass| Review[Full pinned diff and actual body review]
+    Review -->|request changes and shared budget left| Fix
+    Review -->|incomplete or unavailable| Blocked
+    Review -->|approve| Draft[Lease-push and create draft; save receipt]
+    Draft --> Checks
+    Checks -->|pending within deadline| Pending
+    Checks -->|failed, revoked or drift| Blocked
+    Checks -->|all current evidence valid| Ready[Ready for human review; no merge]
+    Ready --> Done[squad:done; release issue claim; keep WIP until close]
 
-    NewIssue -->|yes| AutoIssue{Issue has loop:auto?}
-    NewIssue -->|no| Autonomous{Autonomous mode enabled?}
-    AutoIssue -->|no; manual| ClaimManual[Atomically claim manual issue ref]
-    AutoIssue -->|yes| Budget{Autonomous PR budget available?}
-    Budget -->|no| Idle[Idle loop:auto work;<br/>manual issues and revisions remain eligible]
-    Budget -->|yes| ClaimAuto[Atomically claim loop:auto issue ref]
-    ClaimAuto --> Reserve[Atomically reserve autonomous budget slot]
-
-    Autonomous -->|no| Idle
-    Autonomous -->|yes| AutoCapacity{Budget and auto-issue capacity available?}
-    AutoCapacity -->|no| Idle
-    AutoCapacity -->|yes| Generate[Generate one goal-aligned squad issue]
-    Generate --> Wake
-
-    ClaimRevision --> Implement[Run Copilot or Squad implementation]
-    ClaimManual --> Implement
-    Reserve --> Implement
-    Implement --> VerifyState{Verification state?}
-    VerifyState -->|disabled| CriticState{Independent critic enabled?}
-    VerifyState -->|unavailable| Draft[Publish a flagged draft PR]
-    VerifyState -->|configured| RunVerify[Run build and tests]
-    RunVerify -->|pass| CriticState
-    RunVerify -->|fail| VerifyRetries{Correction retries left?}
-    VerifyRetries -->|yes| VerifyFix[Correct from verification log]
-    VerifyFix --> RunVerify
-    VerifyRetries -->|no| Draft
-
-    CriticState -->|no| Ready[Publish a ready PR]
-    CriticState -->|yes| Review[Fresh attested read-only review]
-    Review -->|APPROVE| Ready
-    Review -->|REQUEST_CHANGES| CriticRetries{Correction retries left?}
-    CriticRetries -->|yes| CriticFix[Apply critic feedback]
-    CriticFix --> RunVerify
-    CriticRetries -->|no| Draft
-    Review -->|unavailable or malformed| InfraRetries{Critic retries left?}
-    InfraRetries -->|yes| Review
-    InfraRetries -->|no| Draft
-
-    Ready --> Finish[Add squad:done<br/>release atomic claim]
-    Draft --> Finish
-    Finish --> Idle
-    Idle --> Wake
 ```
 
 <details>
@@ -331,7 +308,9 @@ sequenceDiagram
     Verify-->>Worker: PASS
     Worker->>Critic: Review attested diff against rubric
     Critic-->>Worker: APPROVE
-    Worker->>GitHub: Push branch and open ready PR
+    Worker->>GitHub: Push branch and open draft PR
+    Worker->>GitHub: Verify exact-head remote checks and unchanged approval
+    Worker->>GitHub: Promote to Ready with readback
     Worker->>GitHub: Add squad:done and release claim ref
     Note over GitHub: A human reviews and merges
 ```
@@ -404,7 +383,7 @@ sequenceDiagram
 </details>
 
 <details>
-<summary><b>Scenario E — Verification unavailable: fail safely to draft</b></summary>
+<summary><b>Scenario E — Verification unavailable: block without code correction</b></summary>
 
 ```mermaid
 sequenceDiagram
@@ -417,8 +396,8 @@ sequenceDiagram
     Impl-->>Worker: Local commits
     Worker->>Verify: Resolve automatic build and test command
     Verify-->>Worker: No supported command detected
-    Worker->>GitHub: Push branch and open draft PR
-    Worker->>GitHub: Add verification-unavailable warning to PR body
+    Worker->>GitHub: Mark squad:failed, consume revision trigger
+    Note over Worker: Retain local work and redacted evidence; no publication
     Note over GitHub: Human review is required before merge
 ```
 
@@ -437,7 +416,7 @@ sequenceDiagram
     Worker->>GitHub: Read autonomous budget refs
     GitHub-->>Worker: Daily autonomous cap reached
     Worker-->>Worker: Idle autonomous work until the next poll interval
-    Note over Worker,GitHub: Manual squad issues and revisions bypass the cap
+    Note over Worker,GitHub: Budget applies to configured unattended labels, including revisions
 ```
 
 </details>
@@ -460,20 +439,22 @@ sequenceDiagram
     Impl-->>Worker: Revision commits
     Worker->>Gates: Verify and independently review revision
     alt Gates pass
-      Gates-->>Worker: Ready
-      Worker->>GitHub: Force-with-lease update of the same PR branch
+      Gates-->>Worker: Locally verified and reviewed
+      Worker->>GitHub: Convert PR to draft before any lease-push
+      Worker->>GitHub: Update branch and save exact-head receipt
+      Worker->>GitHub: Check current-head remote evidence before Ready
     else Gates remain unresolved
-      Gates-->>Worker: Draft required
-      Worker->>GitHub: Convert existing PR to draft before push
-      Worker->>GitHub: Force-with-lease update with gate warning
+      Gates-->>Worker: Blocked
+      Worker->>GitHub: Mark failed and consume revision trigger
+      Note over Worker: Retain local work; do not push failed revision
     end
-    Worker->>GitHub: Remove squad:revision and release claim ref
+
 ```
 
 </details>
 
 <details>
-<summary><b>Scenario H — Critic unavailable: retry infrastructure, then draft</b></summary>
+<summary><b>Scenario H — Critic unavailable: stop without code correction</b></summary>
 
 ```mermaid
 sequenceDiagram
@@ -483,12 +464,10 @@ sequenceDiagram
 
     Worker->>Critic: Submit read-only review file with nonce
     Critic-->>Worker: Timeout, malformed output, or missing attestation
-    loop Bounded infrastructure retries
-      Worker->>Critic: Retry unchanged diff without modifying code
-      Critic-->>Worker: No valid attested verdict
-    end
-    Worker->>GitHub: Open draft PR with critic-unavailable warning
+    Worker->>GitHub: Mark squad:failed and consume revision trigger
+    Note over Worker: Retain full input binding and redacted logs; explicit retry only
     Note over GitHub: No missing verdict is inferred as approval
+
 ```
 
 </details>
@@ -509,13 +488,24 @@ sequenceDiagram
 | `loop.critic` | `false` | Run an independent second-pass critic review |
 | `loop.criticModel` | same as `model` | Separate model for the critic pass |
 | `loop.verify` | `"off"` | `"off"` \| `"auto"` \| `"<cmd>"` \| `".loop/verify.sh"` |
-| `loop.maxRetries` | `2` | Self-correction attempts per quality gate failure |
-| `loop.maxPrsPerDay` | `0` (off) | Repository-wide daily cap for `loop:auto` PR attempts; manual issues and revisions bypass it |
+| `loop.maxRetries` | `2` | Total correction allowance shared by verification and critic |
+| `loop.maxPrsPerDay` | `0` (off) | Repository-wide daily cap for configured unattended attempts, including revisions |
 | `loop.maxOpenAutoIssues` | `3` | Concurrent self-generated issue cap |
 | `loop.goalFile` | `"auto"` | Goal source for autonomous planning; discovers `.loop/GOAL.md`, `BACKLOG.md`, or `.squad/GOAL.md` |
 | `loop.workScope` | `"all"` | `"all"` \| `"green-fit"` (only deterministic, well-scoped autonomous tasks) |
 | `loop.criticRubric` | `"auto"` | `"auto"` \| `"repo-aware"` \| repository-relative rubric path |
 | `loop.implementer` | `"plain"` | `"plain"` (restricted) \| `"squad"` (full Squad coordinator; v0.1 recommended path) |
+| `loop.requiredLabels` | `[]` | Additional approval labels checked at admission, publication and Ready |
+| `loop.unattendedLabels` | `["loop:auto"]` | Work labels subject to the attempt budget, including revisions |
+| `loop.requiredChecks` | `[]` | Exact required successful check names; empty means draft-only |
+| `loop.checkBackend` | `"checks"` | `"actions"` uses exact-head workflow/job APIs if check-rollup access is unavailable |
+| `loop.requiredWorkflows` | `[]` | Exact universal workflow names required by the Actions backend |
+
+| `loop.maxActiveIssues` | `0` | `1` enables repository-wide WIP slot through close/merge |
+| `loop.maxTaskSeconds` | `3600` | Total implementation, corrections and pending-check deadline |
+| `loop.maxReviewBytes` | `262144` | Maximum complete review input bytes; oversize blocks |
+| `loop.profileDir` | `""` | Root-owned read-only operator profile, never repository-selected |
+
 
 ### Interactive settings in `.env.workers`
 
@@ -581,7 +571,7 @@ threat model.
 - The Cockpit dashboard is functional but minimal.
 - Autonomous mode (`loop.autonomous: true`) is experimental. Enable only with a low
   `maxPrsPerDay` and review every PR manually until you trust the output quality. The cap applies
-  only to `loop:auto` work; human-created `squad` issues remain immediately eligible.
+  to `unattendedLabels` (default `loop:auto`); configure it consistently for all producers.
 - Requires an active GitHub Copilot subscription. Copilot models are not self-hosted; all
   inference happens via GitHub's Copilot API.
 
