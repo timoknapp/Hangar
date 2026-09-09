@@ -43,6 +43,7 @@ for f in \
   deploy.sh \
   remote-deploy.sh \
   tests/worker-loop.test.sh \
+  tests/issue-evidence.test.sh \
   tests/quality-lifecycle.test.sh \
   tests/git-boundary.test.sh \
   tests/immutable-evidence.test.sh \
@@ -94,6 +95,7 @@ bash tests/public-release-check.sh
 bash tests/config-equivalence.sh
 bash tests/pr-guard.test.sh
 bash tests/worker-loop.test.sh
+bash tests/issue-evidence.test.sh
 bash tests/quality-lifecycle.test.sh
 bash tests/git-boundary.test.sh
 bash tests/immutable-evidence.test.sh
