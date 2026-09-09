@@ -12,7 +12,15 @@ mode=os.environ.get('CRITIC_TEST_MODE','full')
 model='fixture-model'; interaction='fixture-interaction'
 response=os.environ.get('FAKE_COPILOT_OUTPUT','VERDICT: APPROVE\nINPUT_NONCE: fixture-nonce\n')
 events=[]
-def emit(t,**data): events.append({'type':t,'data':data})
+# Copilot 1.0.70 marks data.parentToolCallId deprecated and reports the sub-agent
+# instance on the event ENVELOPE as agentId. Both shapes must be refused.
+def emit(t,**data):
+    event={'type':t,'data':data}
+    if mode=='subagent-envelope' and t.startswith('tool.execution'):
+        event['agentId']='subagent-instance-1'
+    if mode=='subagent-verdict' and t=='assistant.message':
+        event['agentId']='subagent-instance-1'
+    events.append(event)
 def read(start,end,tool='view',content=None,**extra):
     call=f'call-{len(events)}'
     emit('tool.execution_start',toolCallId=call,toolName=tool,model=model,
@@ -103,7 +111,7 @@ run_agent_copilot() {
 run_critic || fail 'full coverage rejected'
 [[ "$REVIEWED_HEAD" == "$(git rev-parse HEAD)" && -n "$REVIEW_INPUT_HASH" ]] || fail 'lost binding'
 echo 'PASS: >128KiB input, complete exact contiguous results, bound approval and bounded argv'
-for mode in missing truncated partial hole elided forged-content short-line short-range detailed-only forged-response grep wrong-path denied subagent unpaired duplicate compaction resume early-verdict model-change missing-terminal broken-json; do
+for mode in missing truncated partial hole elided forged-content short-line short-range detailed-only forged-response grep wrong-path denied subagent subagent-envelope subagent-verdict unpaired duplicate compaction resume early-verdict model-change missing-terminal broken-json; do
   CRITIC_TEST_MODE="$mode"
   if run_critic; then fail "$mode coverage accepted"; fi
   [[ "$CRITIC_FAILURE_KIND" == incomplete ]] || fail "$mode became code-repair failure"

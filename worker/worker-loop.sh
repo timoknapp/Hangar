@@ -2683,8 +2683,11 @@ try {
          'session.snapshot_rewind', 'session.error', 'abort'].includes(e.type)) {
       throw Error('interrupted or rewritten context');
     }
-    // Subagent reads are not evidence that the independent main critic saw text.
-    if (d.parentToolCallId) continue;
+    // Subagent activity is not evidence that the independent main critic saw the
+    // text. Copilot 1.0.70 marks data.parentToolCallId deprecated and reports the
+    // sub-agent instance on the event envelope as agentId, so BOTH must be absent
+    // before an event can earn coverage or supply the final main-model response.
+    if (d.parentToolCallId || e.agentId) continue;
     if (e.type === 'user.message') {
       if (interaction || !d.interactionId) throw Error('not one fresh interaction');
       interaction = d.interactionId;
