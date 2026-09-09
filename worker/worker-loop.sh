@@ -2668,6 +2668,7 @@ try {
   const lines = text.split('\n');
   const count = lines.length - (text.endsWith('\n') ? 1 : 0);
   const covered = new Set(), calls = new Map(), completed = new Set();
+  const mismatchedLines = new Set();
   let interaction, model = expectedModel, final = '', finalCovered = false, result = false;
   for (const raw of fs.readFileSync(events, 'utf8').split('\n')) {
     if (!raw.trim()) continue;
@@ -2717,6 +2718,11 @@ try {
         const match = /^([1-9][0-9]*)\. (.*)$/.exec(row);
         if (!match) { valid = false; break; }
         const n = Number(match[1]);
+        // Report locations only: source/result text may contain secrets. Never
+        // normalize redaction markers or substitute detailedContent as evidence.
+        if (Number.isSafeInteger(n) && n <= count && match[2] !== lines[n - 1]) {
+          mismatchedLines.add(n);
+        }
         if (!Number.isSafeInteger(n) || (previous !== null && n !== previous + 1) ||
             n > lines.length || match[2] !== lines[n - 1] ||
             (range && (!Array.isArray(range) || range.length !== 2 ||
@@ -2736,7 +2742,19 @@ try {
     }
   }
   if (!result || !final.trim()) throw Error('missing terminal response/result');
-  if (!finalCovered) throw Error(`incomplete input delivery (${covered.size}/${count} lines)`);
+  if (!finalCovered) {
+    const missing = [];
+    for (let n = 1; n <= count; n++) {
+      if (covered.has(n)) continue;
+      const first = n;
+      while (n < count && !covered.has(n + 1)) n++;
+      if (missing.length < 12) missing.push(first === n ? `${n}` : `${first}-${n}`);
+    }
+    const mismatches = [...mismatchedLines].sort((a, b) => a - b).slice(0, 12);
+    throw Error(`incomplete input delivery (${covered.size}/${count} lines); ` +
+      `missing ranges (first 12): ${missing.join(',') || 'none'}; ` +
+      `content mismatch lines (first 12): ${mismatches.join(',') || 'none'}`);
+  }
   process.stdout.write(final);
 } catch (e) {
   // Do not echo malformed JSON (it may contain untrusted source or credentials).

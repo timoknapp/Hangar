@@ -149,6 +149,40 @@ echo 'PASS: >128KiB single line truncated without marker fails closed under unch
 CRITIC_TEST_MODE=full
 run_critic || fail 'exact complete long-line result rejected'
 echo 'PASS: exact complete long-line delivery accepted (fake CLI, not runtime capacity claim)'
+# Redaction false positives must not earn coverage, including when the CLI
+# reports every range and its display log retains the unmodified source.
+python3 - "$TMP" <<'PY'
+import json, pathlib, sys
+root=pathlib.Path(sys.argv[1])
+phrase=' '.join(['Bearer', 'prefix.'])
+for mode in ['redacted', 'reworded']:
+    p=root/(mode+'.md')
+    lines=[f'Documentation line {n}' for n in range(1,1423)]
+    lines[897]=('Preserve primitive types and no '+phrase if mode=='redacted'
+                else 'Preserve primitive types; send only the raw token without a scheme prefix.')
+    p.write_text('\n'.join(lines)+'\n')
+    events=[{'type':'user.message','data':{'interactionId':'one'}}]
+    for start in range(1,1423,100):
+        end=min(start+99,1422);call=f'view-{start}'
+        numbered='\n'.join(f'{n}. {lines[n-1]}' for n in range(start,end+1))
+        returned=numbered.replace(phrase, '******') if mode=='redacted' else numbered
+        events.extend([
+            {'type':'tool.execution_start','data':{'model':'fixture-model','toolName':'view',
+             'toolCallId':call,'arguments':{'path':str(p),'view_range':[start,end]}}},
+            {'type':'tool.execution_complete','data':{'model':'fixture-model','toolCallId':call,
+             'success':True,'result':{'content':returned,'detailedContent':numbered}}}])
+    events.extend([
+        {'type':'assistant.message','data':{'model':'fixture-model','content':'VERDICT: APPROVE\nINPUT_NONCE: fixture','toolRequests':[]}},
+        {'type':'result','exitCode':0}])
+    (root/(mode+'.jsonl')).write_text('\n'.join(json.dumps(e) for e in events)+'\n')
+PY
+if validate_critic_delivery "$TMP/redacted.md" "$TMP/redacted.jsonl" fixture-model >"$TMP/redaction-proof.log" 2>&1; then
+  fail 'redacted source counted as complete delivery'
+fi
+grep -Fq '(1322/1422 lines); missing ranges (first 12): 801-900; content mismatch lines (first 12): 898' "$TMP/redaction-proof.log" || fail 'missing redaction range diagnosis'
+if grep -Eq 'Bearer|prefix|Documentation|\*{6}' "$TMP/redaction-proof.log"; then fail 'diagnostic leaked source/result content'; fi
+validate_critic_delivery "$TMP/reworded.md" "$TMP/reworded.jsonl" fixture-model >/dev/null || fail 'unmodified reworded content rejected'
+echo 'PASS: redacted line 898 rejects entire 801-900 block; diagnostics expose only locations; exact reworded control passes'
 LOOP_MAX_REVIEW_BYTES=32
 run_agent_copilot() { fail 'oversize called model'; }
 if run_critic; then fail 'oversize accepted'; fi

@@ -167,6 +167,8 @@ the guarded starter profile above, a worker claims, implements, verifies, indepe
 and opens a draft PR only after local gates pass.
 Ready additionally requires current-head remote checks from an explicit `requiredChecks` policy.
 Disabled verification/critic, missing permissions or absent required-check policy never establish Ready.
+Incomplete critic delivery reports up to twelve missing ranges and content-mismatch line numbers, never source/result text.
+A single redacted or altered line invalidates its whole returned range; inspect those locations before an explicitly authorized recovery, without disabling secret filtering or accepting display/session logs as delivery proof.
 See [quality policy and recovery](docs/OPERATIONS.md#13-quality-policy-and-recovery).
 
 > **Loopback-only default.** Interactive SSH/ttyd use ports 2222/7681; worker SSH/ttyd use
