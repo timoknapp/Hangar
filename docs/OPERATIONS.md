@@ -437,9 +437,83 @@ Set it to `["squad"]` to conservatively budget all queued work without changing 
 Otherwise route scheduled/dispatched producers through the same queue and apply a shared configured unattended label.
 `maxPrsPerDay` counts attempts (including revisions and failures), not finished PRs.
 
+#### Explicitly approved manual intake (opt-in)
+
+Set these fields identically on every worker sharing a repository:
+
+```json
+{
+  "manualIssueCreators": ["approved-maintainer"],
+  "requiredLabels": ["implementation-approved"],
+  "unattendedLabels": ["squad"],
+  "maxActiveIssues": 1,
+  "maxPrsPerDay": 2
+}
+```
+
+`deploy.sh generate` maps `loop.manualIssueCreators` to the JSON environment value
+`LOOP_MANUAL_ISSUE_CREATORS`; the worker entrypoint preserves it in its private
+workspace environment. Direct worker configuration uses, for example,
+`LOOP_MANUAL_ISSUE_CREATORS='["approved-maintainer"]'` and
+`LOOP_REQUIRED_LABELS='["implementation-approved"]'`. No new credential or
+approval-label creator is configured. The empty allowlist (`[]`, default) preserves
+legacy admission/caps. Nonempty allowlists require nonempty approval label names;
+queue/status labels (`squad`, `squad:*`, `loop:auto`) are not approval labels.
+Invalid lists fail deployment generation and worker policy validation. Logins are
+case-insensitive, distinct, at most 39 ASCII alphanumeric/hyphen characters (no
+leading/trailing hyphen), up to 64 entries.
+
+The latest event for every required approval label must name an allowlisted human actor; bot, missing, revoked or unreadable provenance fails closed at admission and each authorization gate. Complete label-event pagination is required.
+
+A manual exemption requires an **open issue**, `squad`, **every configured approval
+label**, an allowlisted creator and explicit human identity from GitHub. Bot,
+missing/unknown author identity and `loop:auto` issues never qualify. Merely lacking
+`loop:auto` is not proof of manual origin: scheduled bot producers often omit it.
+Only the exemption is denied for untrusted authors; otherwise existing unattended
+label budgeting applies. Use `unattendedLabels: ["squad"]` to cover scheduled work.
+GitHub identifies the account, not whether it clicked the UI or used a PAT; do not
+allowlist automation accounts or use an allowlisted human credential for producers.
+Labels alone do not authenticate the approving actor; existing label-provenance and
+repository policy gates still apply.
+
+A free worker checks the complete paginated open `squad` queue for approved manual
+issues **before nonmanual revisions or generated work**, oldest issue number first.
+Manual revision requests use the same identity/approval checks and per-issue claim.
+Manual intake does not acquire, assert, reconcile or release the autonomous global
+WIP slot, and does not consume/check daily attempt reservations even when its labels
+match `unattendedLabels`. Other ready-for-review PRs or global WIP/history API errors
+therefore do not block manual admission. Each issue still uses an atomic claim:
+separate issues can run on separate free workers; the same issue cannot run twice.
+The selector skips exact issue claims even before their processing labels appear;
+a crashed/unmarked claim is retained for recovery without starving later manual work.
+Existing local work, unresolved owned attempts and pending publications are never
+interrupted. Priority is checked on the next normal free-worker poll, not preemption.
+A failed/dirty worker still needs operator recovery.
+
+The publisher re-fetches author, approval labels and title/body after claiming and
+at every existing authorization gate. It persists `manualIntake` in its private
+pending receipt and rechecks the exemption on restart and before Ready. Removing
+approval/allowlist membership, missing/bot authors, closing or changing the contract
+blocks publication without falling back to a budget-free autonomous run. Old receipts
+without `manualIntake` stay **nonmanual**; they never acquire a new exemption on
+restart. Claim ownership, lease-pinned writes, local verification/critic, exact
+base/head/body/check-policy binding and human merge remain mandatory.
+
+
 `maxActiveIssues: 1` uses one atomic repository WIP ref, retained across draft, ready and failed work until the issue closes.
-New tasks wait behind existing failed/processing/pending issues and worker PRs.
+Nonmanual tasks wait behind existing failed/processing/pending issues and worker PRs
+(the scan remains conservative, including manual artifacts). The explicit manual
+intake exemption above is independent of this global limit.
 Explicit revisions can repair the same WIP issue; WIP does not authorize stealing its active issue claim.
+WIP reconciliation runs only during nonmanual WIP admission. For an open issue it
+reads **all pages** of PR history, matching the exact `squad/ISSUE-` branch prefix;
+one relevant open PR retains WIP, and at least one relevant PR with all closed is
+required for PR-based release. Explicit issue closure is also terminal. An active
+exact issue claim prevents release. API/page/shape failures pause autonomous
+admission with logs, not silent acceptance or a permanent 100-history ceiling.
+These API reads are not an atomic GitHub snapshot; the existing claim and
+lease-pinned WIP ownership checks remain the concurrency boundary. Large histories
+cost additional API calls; rate limits and permission failures remain fail-closed.
 Do not delete `squad-claims/` or `squad-budget/` refs during general branch cleanup.
 
 `requiredChecks` lists exact remote check names selected by the operator from authoritative workflows.
@@ -508,7 +582,25 @@ The fixed interface is:
 - `review-assets.txt`: optional relative image-deliverable directories, one per line with a trailing slash.
   Blank/comment lines are ignored; absent file means no image-link rewriting.
   This is data only, not an upload command or proof of image authenticity.
-- `verify.sh`: invoked as `bash <profile>/verify.sh <pinned-base-sha> <current-head-sha>` ONLY through the credential-free coding boundary.
+- `verify.sh`: invoked as `bash <profile>/verify.sh <pinned-base-sha> <current-head-sha> <admission-class>` ONLY through the credential-free coding boundary.
+  The third argument is exactly `manual` or `unattended`, supplied from the publisher's
+  pinned admission state, never read from editable repository files, issue text or
+  model output. Manual context is freshly reauthorized (author, approval, contract
+  and issue claim) before resolving the profile command. Nonmanual/old receipt state
+  always produces `unattended`, even when current labels/author would now qualify.
+  This routing value does not mean every `unattended` issue consumes daily budget;
+  configured `unattendedLabels` still determines that. Scripts using only `$1`/`$2`
+  can ignore `$3`; profiles that reject extra arguments must be updated before rollout.
+  Auto-detected repository verify scripts and literal verify commands are unchanged.
+  The same class appears as `admissionClass` in publisher-verified issue evidence,
+  bound to the current runtime class and freshly checked issue metadata. Neither
+  interface grants broader scope: existing design-first/restrictive queue rows remain
+  authoritative restrictions. An operator profile may explicitly handle an absent
+  queue row for `manual` intake; there is no generic queue-row bypass here. Treat a
+  missing/unknown third argument conservatively, never as manual. This is trusted
+  context only on the publisher-invoked path, not a credential or proof attached to
+  arbitrary agent-invoked commands.
+  The third argument is publisher-owned admission context; manual authority is rechecked before the call. Old profiles may ignore it; missing context must default to unattended. It does not override restrictive scope or quality checks. `admissionClass` in publisher-verified issue evidence carries the same class.
   Helpers inside the profile execute as coding code too, never as publisher.
   Exit 78 means policy/evidence blocked; any applicable UI check must fail closed when real reviewer evidence is absent.
 
@@ -577,3 +669,21 @@ This restriction is explicitly accepted for the **supported-contract generic rel
 5. After an authorized supported correction or repository change, rerun admission, verification and independent review against the new exact source/head. Never reuse old approval or publication receipts for changed evidence. Never materialize excluded sensitive source solely to pass full-tree binding.
 
 This C1 note takes precedence over generic “reset corrupted workspace” advice for evidence failures. Existing full SHA-1/regular-file checkout requirements, unsupported linked/sparse/shallow/alternate/promisor repositories, tracked links/submodules, masked indexes, normalized worktree bytes and resource bounds still apply; see `tests/README.md`, **Immutable local evidence boundary**, **Required object scope and availability**, and **Evidence recovery**. No full-history audit, universal Git compatibility, runtime/image, credential-path or downstream deployment acceptance is implied.
+
+### Headless CLI access to the private profile
+
+Copilot tool approval does not imply file-path approval. Hangar supplies exactly `--add-dir <profileDir>` to every guarded CLI invocation, including implementation corrections and read-only review, after validating the dedicated operator profile. It never adds `--allow-all-paths`, `--allow-all` or `--yolo`. Existing tool/URL denials and the credential-free launcher remain unchanged.
+
+The profile must be a canonical absolute non-root path on an actual read-only mount. All ancestors must be root-owned, traversable and not group/world writable; all contained files must be regular, root-owned, world-readable, and not group/world writable. Symlinks, special files, more than 256 entries, and aggregate content exceeding `maxReviewBytes` are rejected. `implementer.md` and `verify.sh` must exist. Keep only nonsecret task instructions and verification helpers here. These checks occur before startup admission and immediately before model launch. External profiles referenced by path without this allowance otherwise fail only inside the headless CLI, despite successful ordinary Unix reads.
+
+Validate real OS protection with `WORKER_IMAGE=<immutable-image> bash tests/profile-access.container.sh` as root on a Docker host. This uses an owned networkless fixture with no credentials or production volumes. An inference acceptance test must additionally confirm actual CLI profile reads and helper execution, continued unrelated-path denial, and no writable profile; a shell-only preflight is not sufficient to claim CLI compatibility.
+
+### Correctable deliverables versus unavailable infrastructure
+
+Profile verification exits with zero only for success. Use a normal nonzero failure (for example 1) for incomplete task deliverables that the implementer can supply within existing authorization, such as an absent required capture manifest. This permits only the existing bounded correction budget, after a proven clean baseline, followed by full verification and independent review. Reserve 78 for operator-policy/authorization failures; those remain terminal, separately diagnosed from unavailable infrastructure. Never convert revoked approval, unsafe metadata or a changed scope contract into a code-correction request.
+
+Copilot validates literal shell paths before a compound command runs. Prefer short commands and explicit paths rooted in the supplied repository directory, especially for log redirection after `cd`. A relative `../test.log` can be interpreted outside the workspace even when the eventual shell would create it inside the repository. Correct the command's destination rather than granting all-paths access. Preserve any already-produced work if a real denial remains; operator recovery must revalidate ownership, exact branch/base/head and original approval before continuation.
+
+### Critic recovery from truncated reads
+
+The exact-delivery validator gives no credit to an entire view result containing truncation, elision or non-numbered guidance. A reviewer must therefore re-read the full originally requested range in smaller clean subranges, not only the missing tail after the last visible numbered line. All instructions use at most 50-line initial reads and explicit whole-range retry semantics. An incomplete result remains terminal; after correcting a demonstrated delivery defect, operator recovery must use a fresh independent review of the unchanged verified source and body rather than accept the previous verdict.
