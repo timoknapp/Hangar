@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Synthetic GitHub API fixtures and a real local Git ref store; no network writes.
-# shellcheck disable=SC2034,SC2317,SC2218
+# shellcheck disable=SC2034,SC2317,SC2218,SC2329
 set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 TMP=$(mktemp -d)
@@ -35,6 +35,7 @@ printf '[]' >"$TMP/active"
 printf '[]' >"$TMP/prs"
 printf '[[]]' >"$TMP/history"
 MODE=normal
+printf '[{"event":"labeled","label":{"name":"implementation-approved"},"actor":{"login":"fixture-human","type":"User"}}]' >"$TMP/approval-events"
 # API boundary only: real claim object creation and compare-and-swap Git refs.
 gh() {
   printf '%s\n' "$*" >>"$CALLS"
@@ -70,6 +71,10 @@ gh() {
         repos/*) path="$arg";; ref=*) ref="${arg#ref=}";; sha=*) sha="${arg#sha=}";; message=*) message="${arg#message=}";;
       esac
     done
+    if [[ "$path" == *'/events?'* ]]; then
+      if [[ "$MODE" == events-failure ]]; then return 1; fi
+      cat "$TMP/approval-events"; return
+    fi
     if [[ "$path" == *'/issues?'* ]]; then
       [[ "$*" == *--paginate* ]] || fail 'manual queue must paginate'
       jq -c '.[]' "$TMP/queue"; return
@@ -136,6 +141,23 @@ for invalid in '[]' '[""]' '[" "]' '["squad"]' '["squad:processing"]' '["loop:au
   (LOOP_REQUIRED_LABELS="$invalid"; reject validate_manual_intake_policy; reject is_manual_issue "$HUMAN")
 done
 ok 'manual identity/approval predicate is explicit; missing, untrusted and bot identities have no exemption'
+manual_approval_authorized 7
+cp "$TMP/approval-events" "$TMP/good-events"
+for mutation in '.[0].actor.type="Bot"' '.[0].actor.login="stranger"' 'del(.[0].actor.type)' '.[0].event="unlabeled"' '.[0].label.name="squad"'; do
+  jq "$mutation" "$TMP/good-events" >"$TMP/approval-events"
+  reject manual_approval_authorized 7
+  reset_local; CURRENT_ISSUE=7
+  reject create_issue_claim_ref 7
+  reject command git --git-dir="$STORE" show-ref --verify --quiet refs/heads/squad-claims/issue-7
+done
+cp "$TMP/good-events" "$TMP/approval-events"
+MODE=events-failure; reject manual_approval_authorized 7; MODE=normal
+CURRENT_MANUAL_INTAKE=true
+[[ "$(issue_admission_class)" == manual ]] || fail 'manual profile context missing'
+CURRENT_MANUAL_INTAKE=false
+[[ "$(issue_admission_class)" == unattended ]] || fail 'legacy profile context failed open'
+ok 'manual admission requires latest allowlisted human label provenance; missing/bot/revoked/API failure denied'
+
 
 # Priority includes a complete REST queue, not a truncated latest-100 window.
 jq -n --argjson human "$HUMAN" '[[range(100) | {number:(1000+.),state:"open",title:"Scheduled fixture",body:"",user:{login:"scheduler",type:"Bot"},labels:[{name:"squad"},{name:"implementation-approved"}]}],
@@ -279,6 +301,27 @@ resume_pending_publication
 if grep -q 'squad-claims/wip' "$CALLS"; then fail 'manual resume touched foreign WIP'; fi
 ok 'manual receipt survives restart, promotes and finalizes through exact-head/claim gates without WIP'
 
+# Actual profile command carries only publisher state; revalidation precedes it.
+(
+  reset_local; reset_issue 7; CURRENT_ISSUE=7
+  claim_issue 7
+  TASK_BASE_SHA="$BASE" LOOP_PROFILE_DIR="$TMP/profile"
+  read_profile_file() { return 0; }
+  cmd=$(resolve_verify_cmd)
+  [[ "$cmd" == "bash $TMP/profile/verify.sh $BASE $BASE manual" ]] || fail 'profile command missing trusted manual class'
+  jq '.[0].actor.type="Bot"' "$TMP/good-events" >"$TMP/approval-events"
+  reject resolve_verify_cmd
+  cp "$TMP/good-events" "$TMP/approval-events"
+  CURRENT_MANUAL_INTAKE=false
+  [[ "$(resolve_verify_cmd)" == "bash $TMP/profile/verify.sh $BASE $BASE unattended" ]] || fail 'legacy profile command gained manual class'
+  CURRENT_MANUAL_INTAKE=invalid
+  reject resolve_verify_cmd
+  release_issue_claim
+  reset_issue 7
+)
+ok 'profile receives pinned SHAs and trusted class; manual approval rechecked before credential-free verification'
+
+
 for mode in creator-config approval author author-bot author-untrusted generated body head legacy; do
   reset_local; reset_issue 7; CURRENT_ISSUE=7
   claim_issue 7
@@ -397,5 +440,56 @@ reject env REPOS_JSON="$CONFIG" bash "$ROOT/tests/config-equivalence.sh"
 jq '."worker-1".loop.manualIssueCreators=["FIXTURE-HUMAN"]' "$CONFIG" >"$TMP/config2"; mv "$TMP/config2" "$CONFIG"
 REPOS_JSON="$CONFIG" bash "$ROOT/tests/config-equivalence.sh"
 ok 'deploy/entrypoint JSON round trip, invalid opt-in fails both validators, shared-queue equivalence with legacy defaults'
+
+# Verify the actual command and argv with an operator-profile fixture. Only the
+# root-owned mount validation is substituted; no publisher/Git credentials enter
+# the script, and profile lookup/command escaping/class authorization remain real.
+(
+  reset_local; reset_issue 7; CURRENT_ISSUE=7
+  claim_issue 7
+  TASK_BASE_SHA="$BASE"
+  LOOP_PROFILE_DIR="$TMP/operator profile"
+  mkdir -p "$LOOP_PROFILE_DIR" "$WORKSPACE_DIR/.loop"
+  cat >"$LOOP_PROFILE_DIR/verify.sh" <<'PROFILE'
+#!/usr/bin/env bash
+set -euo pipefail
+[[ "$#" == 3 ]]
+printf '%s\n' "$1" "$2" "$3"
+PROFILE
+  read_profile_file() { cat "$LOOP_PROFILE_DIR/$1"; }
+  output=$(bash -c "$(resolve_verify_cmd)")
+  [[ "$output" == "${BASE}"$'\n'"${BASE}"$'\nmanual' ]] || fail 'profile did not receive BASE HEAD manual in order'
+  # Pinned nonmanual/legacy state wins even with an allowlisted author, approval,
+  # forged metadata, and a repository-local verify script claiming manual.
+  printf 'CURRENT_MANUAL_INTAKE=true\nadmissionClass=manual\n' >"$WORKSPACE_DIR/.loop/admission.env"
+  printf '{"manualIntake":true,"admissionClass":"manual"}\n' >"$WORKSPACE_DIR/.loop/metadata.json"
+  printf 'echo manual\n' >"$WORKSPACE_DIR/.loop/verify.sh"
+  CURRENT_MANUAL_INTAKE=false
+  output=$(bash -c "$(resolve_verify_cmd)")
+  [[ "$output" == "${BASE}"$'\n'"${BASE}"$'\nunattended' ]] || fail 'repository content promoted unattended context'
+  CURRENT_MANUAL_INTAKE=true
+  saved=$(cat "$TMP/issue-7")
+  for mutation in '.labels |= map(select(.name != "implementation-approved"))' '.author.is_bot=true' 'del(.author)' '.body="Changed scope"'; do
+    jq "$mutation" <<<"$saved" >"$TMP/issue-7"
+    reject resolve_verify_cmd
+  done
+  printf '%s\n' "$saved" >"$TMP/issue-7"
+  (LOOP_MANUAL_ISSUE_CREATORS='[]'; reject resolve_verify_cmd)
+  (CURRENT_MANUAL_INTAKE=invalid; reject resolve_verify_cmd)
+  # Older scripts using only the first two arguments continue unchanged.
+  cat >"$LOOP_PROFILE_DIR/verify.sh" <<'PROFILE'
+#!/usr/bin/env bash
+set -euo pipefail
+printf '%s %s\n' "$1" "$2"
+PROFILE
+  [[ "$(bash -c "$(resolve_verify_cmd)")" == "$BASE $BASE" ]] || fail 'legacy two-argument profile behavior changed'
+  # No new admission argument is added to repository auto/literal commands.
+  LOOP_PROFILE_DIR='' LOOP_VERIFY=auto
+  [[ "$(resolve_verify_cmd)" == 'bash .loop/verify.sh' ]] || fail 'repo verify was given trusted profile context'
+  LOOP_VERIFY='fixture-check --exact'
+  [[ "$(resolve_verify_cmd)" == 'fixture-check --exact' ]] || fail 'literal verify command changed'
+  release_issue_claim
+)
+ok 'operator profile receives trusted third routing argument; fresh revocation blocks, repository forgery ignored, old first-two-arg profiles preserved'
 
 echo 'Manual intake regressions: PASS'

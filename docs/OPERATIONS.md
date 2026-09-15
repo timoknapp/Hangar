@@ -463,6 +463,8 @@ Invalid lists fail deployment generation and worker policy validation. Logins ar
 case-insensitive, distinct, at most 39 ASCII alphanumeric/hyphen characters (no
 leading/trailing hyphen), up to 64 entries.
 
+The latest event for every required approval label must name an allowlisted human actor; bot, missing, revoked or unreadable provenance fails closed at admission and each authorization gate. Complete label-event pagination is required.
+
 A manual exemption requires an **open issue**, `squad`, **every configured approval
 label**, an allowlisted creator and explicit human identity from GitHub. Bot,
 missing/unknown author identity and `loop:auto` issues never qualify. Merely lacking
@@ -580,7 +582,25 @@ The fixed interface is:
 - `review-assets.txt`: optional relative image-deliverable directories, one per line with a trailing slash.
   Blank/comment lines are ignored; absent file means no image-link rewriting.
   This is data only, not an upload command or proof of image authenticity.
-- `verify.sh`: invoked as `bash <profile>/verify.sh <pinned-base-sha> <current-head-sha>` ONLY through the credential-free coding boundary.
+- `verify.sh`: invoked as `bash <profile>/verify.sh <pinned-base-sha> <current-head-sha> <admission-class>` ONLY through the credential-free coding boundary.
+  The third argument is exactly `manual` or `unattended`, supplied from the publisher's
+  pinned admission state, never read from editable repository files, issue text or
+  model output. Manual context is freshly reauthorized (author, approval, contract
+  and issue claim) before resolving the profile command. Nonmanual/old receipt state
+  always produces `unattended`, even when current labels/author would now qualify.
+  This routing value does not mean every `unattended` issue consumes daily budget;
+  configured `unattendedLabels` still determines that. Scripts using only `$1`/`$2`
+  can ignore `$3`; profiles that reject extra arguments must be updated before rollout.
+  Auto-detected repository verify scripts and literal verify commands are unchanged.
+  The same class appears as `admissionClass` in publisher-verified issue evidence,
+  bound to the current runtime class and freshly checked issue metadata. Neither
+  interface grants broader scope: existing design-first/restrictive queue rows remain
+  authoritative restrictions. An operator profile may explicitly handle an absent
+  queue row for `manual` intake; there is no generic queue-row bypass here. Treat a
+  missing/unknown third argument conservatively, never as manual. This is trusted
+  context only on the publisher-invoked path, not a credential or proof attached to
+  arbitrary agent-invoked commands.
+  The third argument is publisher-owned admission context; manual authority is rechecked before the call. Old profiles may ignore it; missing context must default to unattended. It does not override restrictive scope or quality checks. `admissionClass` in publisher-verified issue evidence carries the same class.
   Helpers inside the profile execute as coding code too, never as publisher.
   Exit 78 means policy/evidence blocked; any applicable UI check must fail closed when real reviewer evidence is absent.
 

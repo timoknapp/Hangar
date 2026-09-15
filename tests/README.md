@@ -223,4 +223,9 @@ free workers with distinct manual issues versus a same-issue collision, existing
 WIP/ready PR and exhausted budget, scheduled bots without `loop:auto`, fresh author
 revalidation, restart/Ready and revocation, exact-head drift, old receipts, busy
 workers, config wiring and complete paginated history with late open/closed PRs.
+It also executes the real operator-profile command with the third `manual`/`unattended`
+argument, tests fresh revocation and repository-forged context, and preserves legacy
+profiles using only the first two arguments. `issue-evidence.test.sh` checks the
+publisher-owned `admissionClass` and stale-class rejection without weakening pinned
+queue-row restrictions.
 These local regression fixtures do not establish live worker/GitHub API acceptance. Deployment and live acceptance remain separate.
