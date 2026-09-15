@@ -242,6 +242,15 @@ All implementation, correction, verification and pending-check time shares `maxT
 - `requiredLabels` applies identically at admission, publication and Ready; labels never enlarge issue-body scope.
 - `requiredChecks` lists exact required check names; absent policy, missing permissions or missing local reviewer evidence means draft-only.
 - WIP1 covers repository-wide worker PRs and failed/pending work, not just self-generated tasks.
+  Opt-in `manualIssueCreators` + nonempty explicit `requiredLabels` exempts verified
+  human intake from WIP and daily attempt budgets, ahead of nonmanual revisions/work
+  on free workers. It never preempts a local attempt or shares an issue claim.
+  Author/approval checks are repeated at admission/publication and after loading the
+  persisted manual receipt; old receipts remain nonmanual. Bot/missing identities
+  never qualify, including scheduled issues without `loop:auto`.
+- WIP reconciliation is nonmanual-admission-only and reads complete paginated PR
+  history rather than treating 100 historical PRs as a permanent blocker. Failure
+  remains closed for autonomous admission and cannot block the manual path.
 - No endpoint atomically combines Ready with SHA preconditions: checks are read immediately before and after promotion;
   concurrent drift triggers downgrade and blocks. Human merge protection remains an independent responsibility.
 

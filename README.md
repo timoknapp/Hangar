@@ -135,7 +135,10 @@ Edit `repos.json` — one entry per worker:
 This is Hangar's **recommended guarded starter profile**, not the raw compatibility defaults:
 it enables automatic verification, the independent critic, full Squad implementation, and a
 two-PR daily safety cap for autonomous `loop:auto` work. Human-created `squad` issues do not
-consume that budget by default; set `unattendedLabels: ["squad"]` to conservatively budget all queued work, including revisions. The [configuration reference](#reposjson-fields) lists the fallback defaults
+consume that budget by default (neither do scheduled issues lacking `loop:auto`); set
+`unattendedLabels: ["squad"]` to budget all queued work, including revisions. Opt-in
+`manualIssueCreators` with explicit `requiredLabels` exempts approved human intake from
+that daily budget and WIP1, and prioritizes it on free workers. The [configuration reference](#reposjson-fields) lists the fallback defaults
 used when fields are omitted.
 
 ### 4. Initialize Squad in the target repository
@@ -498,12 +501,13 @@ sequenceDiagram
 | `loop.criticRubric` | `"auto"` | `"auto"` \| `"repo-aware"` \| repository-relative rubric path |
 | `loop.implementer` | `"plain"` | `"plain"` (restricted) \| `"squad"` (full Squad coordinator; v0.1 recommended path) |
 | `loop.requiredLabels` | `[]` | Additional approval labels checked at admission, publication and Ready |
+| `loop.manualIssueCreators` | `[]` | Human creator login allowlist for priority intake outside WIP/daily caps; requires nonempty explicit `requiredLabels` |
 | `loop.unattendedLabels` | `["loop:auto"]` | Work labels subject to the attempt budget, including revisions |
 | `loop.requiredChecks` | `[]` | Exact required successful check names; empty means draft-only |
 | `loop.checkBackend` | `"checks"` | `"actions"` uses exact-head workflow/job APIs if check-rollup access is unavailable |
 | `loop.requiredWorkflows` | `[]` | Exact universal workflow names required by the Actions backend |
 
-| `loop.maxActiveIssues` | `0` | `1` enables repository-wide WIP slot through close/merge |
+| `loop.maxActiveIssues` | `0` | `1` enables repository-wide WIP through close/merge; explicitly approved allowlisted manual intake is exempt |
 | `loop.maxTaskSeconds` | `3600` | Total implementation, corrections and pending-check deadline |
 | `loop.maxReviewBytes` | `262144` | Maximum complete review input bytes; oversize blocks |
 | `loop.profileDir` | `""` | Root-owned read-only operator profile, never repository-selected |

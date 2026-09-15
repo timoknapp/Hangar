@@ -7,6 +7,7 @@ set -euo pipefail
 ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 TMP=$(mktemp -d); trap 'rm -rf "$TMP"' EXIT
 export GITHUB_OWNER=example GITHUB_REPO=repo REPO_BRANCH=main WORKSPACE_DIR="$TMP/repo"
+export LOOP_STATE_DIR="$TMP/state"
 export LOOP_REQUIRED_LABELS='["implementation-approved"]' LOOP_MAX_ACTIVE_ISSUES=1
 # shellcheck source=/dev/null
 source "$ROOT/worker/worker-loop.sh"
@@ -63,7 +64,7 @@ TASK_BASE_SHA=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
 CURRENT_ISSUE=337; reject issue_evidence_context; ok 'evidence from another issue rejected'; CURRENT_ISSUE=336
 # Exercise actual initial/revision prompt constructors, replacing only costly
 # Git/transport boundaries, ending at model invocation (no publication).
-claim_issue() { ISSUE_CONTRACT_HASH=$(issue_contract_hash "$ISSUE"); return 0; }
+claim_issue() { CURRENT_CLAIM_REF=refs/heads/squad-claims/issue-336; CURRENT_CLAIM_OID=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb; ISSUE_CONTRACT_HASH=$(issue_contract_hash "$ISSUE"); return 0; }
 claim_autonomous_issue() { claim_issue; }
 sanitize_repository_git_config() { return 0; }
 prepare_task_base() { TASK_BASE_SHA=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa; TASK_BRANCH="$1"; TASK_START_HEAD="$TASK_BASE_SHA"; }
@@ -90,9 +91,12 @@ run_agent_copilot() {
   printf '%s' "$prompt" >"$TMP/prompt-$PHASE.md"
   return 88 # intentional stop before any publication path
 }
+# Each constructor starts on a free worker; the claim stub restores its owned ref.
+CURRENT_ISSUE="" CURRENT_CLAIM_REF=""
 COPILOT_PAT=synthetic-not-a-credential PHASE=initial
 process_issue "$ISSUE" false >/dev/null 2>&1 || true
 [[ -s "$TMP/prompt-initial.md" ]] || fail 'initial prompt not captured'; ok 'real initial prompt receives snapshot'
+CURRENT_ISSUE="" CURRENT_CLAIM_REF=""
 PHASE=revision
 process_revision "$ISSUE" >/dev/null 2>&1 || true
 [[ -s "$TMP/prompt-revision.md" ]] || fail 'revision prompt not captured'; ok 'real revision prompt receives snapshot'

@@ -437,9 +437,81 @@ Set it to `["squad"]` to conservatively budget all queued work without changing 
 Otherwise route scheduled/dispatched producers through the same queue and apply a shared configured unattended label.
 `maxPrsPerDay` counts attempts (including revisions and failures), not finished PRs.
 
+#### Explicitly approved manual intake (opt-in)
+
+Set these fields identically on every worker sharing a repository:
+
+```json
+{
+  "manualIssueCreators": ["approved-maintainer"],
+  "requiredLabels": ["implementation-approved"],
+  "unattendedLabels": ["squad"],
+  "maxActiveIssues": 1,
+  "maxPrsPerDay": 2
+}
+```
+
+`deploy.sh generate` maps `loop.manualIssueCreators` to the JSON environment value
+`LOOP_MANUAL_ISSUE_CREATORS`; the worker entrypoint preserves it in its private
+workspace environment. Direct worker configuration uses, for example,
+`LOOP_MANUAL_ISSUE_CREATORS='["approved-maintainer"]'` and
+`LOOP_REQUIRED_LABELS='["implementation-approved"]'`. No new credential or
+approval-label creator is configured. The empty allowlist (`[]`, default) preserves
+legacy admission/caps. Nonempty allowlists require nonempty approval label names;
+queue/status labels (`squad`, `squad:*`, `loop:auto`) are not approval labels.
+Invalid lists fail deployment generation and worker policy validation. Logins are
+case-insensitive, distinct, at most 39 ASCII alphanumeric/hyphen characters (no
+leading/trailing hyphen), up to 64 entries.
+
+A manual exemption requires an **open issue**, `squad`, **every configured approval
+label**, an allowlisted creator and explicit human identity from GitHub. Bot,
+missing/unknown author identity and `loop:auto` issues never qualify. Merely lacking
+`loop:auto` is not proof of manual origin: scheduled bot producers often omit it.
+Only the exemption is denied for untrusted authors; otherwise existing unattended
+label budgeting applies. Use `unattendedLabels: ["squad"]` to cover scheduled work.
+GitHub identifies the account, not whether it clicked the UI or used a PAT; do not
+allowlist automation accounts or use an allowlisted human credential for producers.
+Labels alone do not authenticate the approving actor; existing label-provenance and
+repository policy gates still apply.
+
+A free worker checks the complete paginated open `squad` queue for approved manual
+issues **before nonmanual revisions or generated work**, oldest issue number first.
+Manual revision requests use the same identity/approval checks and per-issue claim.
+Manual intake does not acquire, assert, reconcile or release the autonomous global
+WIP slot, and does not consume/check daily attempt reservations even when its labels
+match `unattendedLabels`. Other ready-for-review PRs or global WIP/history API errors
+therefore do not block manual admission. Each issue still uses an atomic claim:
+separate issues can run on separate free workers; the same issue cannot run twice.
+The selector skips exact issue claims even before their processing labels appear;
+a crashed/unmarked claim is retained for recovery without starving later manual work.
+Existing local work, unresolved owned attempts and pending publications are never
+interrupted. Priority is checked on the next normal free-worker poll, not preemption.
+A failed/dirty worker still needs operator recovery.
+
+The publisher re-fetches author, approval labels and title/body after claiming and
+at every existing authorization gate. It persists `manualIntake` in its private
+pending receipt and rechecks the exemption on restart and before Ready. Removing
+approval/allowlist membership, missing/bot authors, closing or changing the contract
+blocks publication without falling back to a budget-free autonomous run. Old receipts
+without `manualIntake` stay **nonmanual**; they never acquire a new exemption on
+restart. Claim ownership, lease-pinned writes, local verification/critic, exact
+base/head/body/check-policy binding and human merge remain mandatory.
+
+
 `maxActiveIssues: 1` uses one atomic repository WIP ref, retained across draft, ready and failed work until the issue closes.
-New tasks wait behind existing failed/processing/pending issues and worker PRs.
+Nonmanual tasks wait behind existing failed/processing/pending issues and worker PRs
+(the scan remains conservative, including manual artifacts). The explicit manual
+intake exemption above is independent of this global limit.
 Explicit revisions can repair the same WIP issue; WIP does not authorize stealing its active issue claim.
+WIP reconciliation runs only during nonmanual WIP admission. For an open issue it
+reads **all pages** of PR history, matching the exact `squad/ISSUE-` branch prefix;
+one relevant open PR retains WIP, and at least one relevant PR with all closed is
+required for PR-based release. Explicit issue closure is also terminal. An active
+exact issue claim prevents release. API/page/shape failures pause autonomous
+admission with logs, not silent acceptance or a permanent 100-history ceiling.
+These API reads are not an atomic GitHub snapshot; the existing claim and
+lease-pinned WIP ownership checks remain the concurrency boundary. Large histories
+cost additional API calls; rate limits and permission failures remain fail-closed.
 Do not delete `squad-claims/` or `squad-budget/` refs during general branch cleanup.
 
 `requiredChecks` lists exact remote check names selected by the operator from authoritative workflows.

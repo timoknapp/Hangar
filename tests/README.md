@@ -15,6 +15,8 @@ Runs automatically on every pre-merge check. Validates:
 - Generic config equivalence across shared-queue workers
 - PR fail-closed ordering assertions
 - Worker-loop unit/integration test suite
+- Manual-intake priority, identity/approval revocation, concurrent per-issue claims,
+  legacy/manual pending receipts and complete >100-PR history reconciliation
 
 The worker suite also runs `critic-complete-input.test.sh`. Critic acceptance
 requires complete exact numbered `view` results in publisher-captured CLI JSONL,
@@ -211,3 +213,14 @@ full regular-file checkout or obtain an explicit operator-supported redesign.
 Do not suppress checks, silently clear flags or materialize excluded sensitive
 source. Deadline/large-history cost is a deliberate fail-closed resource limit;
 no large-monorepo performance or atomic-snapshot claim is made.
+
+### Manual intake fixtures
+
+`manual-intake.test.sh` replaces GitHub with synthetic API responses and a disposable
+local Git ref store. Claim commits and compare-and-swap ref creation are real Git;
+no public issues, labels, PRs, branches or deployments are mutated. It covers two
+free workers with distinct manual issues versus a same-issue collision, existing
+WIP/ready PR and exhausted budget, scheduled bots without `loop:auto`, fresh author
+revalidation, restart/Ready and revocation, exact-head drift, old receipts, busy
+workers, config wiring and complete paginated history with late open/closed PRs.
+These local regression fixtures do not establish live worker/GitHub API acceptance. Deployment and live acceptance remain separate.
