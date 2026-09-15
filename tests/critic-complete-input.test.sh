@@ -36,6 +36,13 @@ if mode not in ['missing','forged-response']:
         end=min(start+99,len(lines))
         if mode=='partial' and start>1: break
         if mode=='hole' and start==101: continue
+        if mode in ['truncated-prefix-tail','truncated-prefix-reread'] and start==101:
+            prefix='\n'.join(f'{i+1}. {lines[i]}' for i in range(100,183))
+            read(101,200,content=prefix+'\n[output truncated; remaining lines omitted]')
+            read(184,200)
+            if mode=='truncated-prefix-reread':
+                read(101,150); read(151,183)
+            continue
         content=None
         if mode=='truncated' and start==101: content='File too large to read at once'
         if mode=='elided' and start==101: content=f'{start}. {lines[start-1]}\n[... truncated ...]\n{end}. {lines[end-1]}'
@@ -101,6 +108,7 @@ run_agent_copilot() {
   for arg in "$@"; do [[ ${#arg} -lt 10000 ]] || fail 'unbounded argv'; done
   [[ "$*" == *'--output-format json'* && "$*" == *'--deny-tool=shell'* &&
      "$*" == *'--deny-tool=write'* && "$*" == *'--deny-tool=url'* ]] || fail 'lost event transport/denials'
+  [[ "$*" == *'ENTIRE tool result earns ZERO'* && "$*" == *'at most 50 lines'* ]] || fail 'whole-range reread instructions missing'
   cp "$input" "$TMP/input.md"
   bash "$ROOT/tests/critic-complete-input.test.sh" --emit "$input"
   case "$CRITIC_TEST_MODE" in
@@ -111,7 +119,7 @@ run_agent_copilot() {
 run_critic || fail 'full coverage rejected'
 [[ "$REVIEWED_HEAD" == "$(git rev-parse HEAD)" && -n "$REVIEW_INPUT_HASH" ]] || fail 'lost binding'
 echo 'PASS: >128KiB input, complete exact contiguous results, bound approval and bounded argv'
-for mode in missing truncated partial hole elided forged-content short-line short-range detailed-only forged-response grep wrong-path denied subagent subagent-envelope subagent-verdict unpaired duplicate compaction resume early-verdict model-change missing-terminal broken-json; do
+for mode in missing truncated truncated-prefix-tail partial hole elided forged-content short-line short-range detailed-only forged-response grep wrong-path denied subagent subagent-envelope subagent-verdict unpaired duplicate compaction resume early-verdict model-change missing-terminal broken-json; do
   CRITIC_TEST_MODE="$mode"
   if run_critic; then fail "$mode coverage accepted"; fi
   [[ "$CRITIC_FAILURE_KIND" == incomplete ]] || fail "$mode became code-repair failure"
@@ -124,6 +132,9 @@ for mode in input-missing input-mutated; do
   [[ "$CRITIC_FAILURE_KIND" == infrastructure ]] || fail 'input binding failure triggered repair'
   echo "PASS: $mode fails input hash binding"
 done
+CRITIC_TEST_MODE=truncated-prefix-reread
+run_critic || fail 'full clean reread of truncated range rejected'
+echo 'PASS: visible truncated prefix earns zero credit; full clean subrange reread restores coverage'
 CRITIC_TEST_MODE=recover
 run_critic || fail 'complete read plus smaller recovery rejected'
 echo 'PASS: successful contiguous reads can recover failed large reads'
