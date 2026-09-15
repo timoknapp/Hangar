@@ -229,3 +229,7 @@ profiles using only the first two arguments. `issue-evidence.test.sh` checks the
 publisher-owned `admissionClass` and stale-class rejection without weakening pinned
 queue-row restrictions.
 These local regression fixtures do not establish live worker/GitHub API acceptance. Deployment and live acceptance remain separate.
+
+### Trusted profile path access
+
+`profile-access.test.sh` covers the exact metadata validator and real CLI-launch argument wiring with synthetic boundaries. `profile-access.container.sh` proves read/execute and write denial on a real root-owned read-only bind mount, without models/network/production volumes. Live inference acceptance separately checks that the actual CLI honors the narrow profile grant while denying unrelated paths; no blanket permissions are required.

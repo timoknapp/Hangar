@@ -106,6 +106,7 @@ VERIFY_FAILURE_KIND=""
 IMPLEMENTER_AGENT_ARGS=()
 COPILOT_IMPLEMENTER_POLICY_ARGS=()
 WORKSPACE_MCP_ARGS=()
+COPILOT_PROFILE_ACCESS_ARGS=()
 
 # Every headless Copilot session is local-only and runs without the built-in
 # GitHub MCP server. Workspace MCP servers remain discoverable. Implementation
@@ -313,11 +314,12 @@ run_agent_copilot() {
   local token="$1"
   shift
   local process_rc=0
+  configure_profile_access || { log_error "Trusted profile path unavailable to Copilot; refusing model call"; return 125; }
   terminate_agent_processes || fatal_agent_isolation_breach
   local remaining
   remaining=$(task_seconds_remaining) || return 124
   printf '%s' "$token" | timeout --kill-after=10 "$remaining" \
-    sudo -n /usr/local/bin/agent-launch copilot "$@" || process_rc=$?
+    sudo -n /usr/local/bin/agent-launch copilot "${COPILOT_PROFILE_ACCESS_ARGS[@]}" "$@" || process_rc=$?
   terminate_agent_processes || fatal_agent_isolation_breach
   return "$process_rc"
 }
@@ -700,6 +702,48 @@ read_profile_file() {
   [[ "$(stat -c %u "$resolved")" == 0 && "$(stat -c %a "$resolved")" =~ ^[456][04][04]$ ]] || return 1
   [[ "$(stat -c %s "$resolved")" -le "$LOOP_MAX_REVIEW_BYTES" ]] || return 1
   cat "$resolved"
+}
+
+# Tool permission and file-path permission are separate in headless Copilot.
+# Expose only the operator's dedicated, immutable, nonsecret profile, never /etc,
+# publisher HOME or all paths. OS read-only ownership remains the write boundary.
+configure_profile_access() {
+  COPILOT_PROFILE_ACCESS_ARGS=()
+  [[ -n "$LOOP_PROFILE_DIR" ]] || return 0
+  local mount_options
+  mount_options=$(findmnt --noheadings --output OPTIONS --target "$LOOP_PROFILE_DIR") || return 1
+  [[ ",$mount_options," == *,ro,* ]] || { log_error "Profile must be a read-only mount"; return 1; }
+  if ! node - "$LOOP_PROFILE_DIR" "$LOOP_MAX_REVIEW_BYTES" <<'PROFILE_ACCESS'
+const fs = require('fs'), path = require('path');
+try {
+  const root = process.argv[2], limit = Number(process.argv[3]);
+  if (!path.isAbsolute(root) || root === '/' || path.resolve(root) !== root ||
+      !Number.isSafeInteger(limit) || limit <= 0) throw Error('invalid profile root/budget');
+  function directory(p) {
+    const s = fs.lstatSync(p);
+    if (!s.isDirectory() || s.uid !== 0 || (s.mode & 0o022) || !(s.mode & 0o001))
+      throw Error('profile ancestry must be root-owned, traversable and non-writable');
+  }
+  for (let p = root; ; p = path.dirname(p)) { directory(p); if (p === '/') break; }
+  const pending = [root]; let count = 0, bytes = 0;
+  while (pending.length) {
+    const dir = pending.pop();
+    for (const name of fs.readdirSync(dir)) {
+      if (++count > 256) throw Error('profile entry budget exceeded');
+      const p = path.join(dir,name), s = fs.lstatSync(p);
+      if (s.isDirectory()) { directory(p); pending.push(p); }
+      else if (!s.isFile() || s.uid !== 0 || (s.mode & 0o022) || !(s.mode & 0o004))
+        throw Error('profile entries must be regular root-owned read-only instructions');
+      else if ((bytes += s.size) > limit) throw Error('profile byte budget exceeded');
+    }
+  }
+  for (const name of ['implementer.md','verify.sh']) {
+    if (!fs.lstatSync(path.join(root,name)).isFile()) throw Error('required profile contract missing');
+  }
+} catch (e) { console.error('Profile access blocked: ' + e.message); process.exit(1); }
+PROFILE_ACCESS
+  then return 1; fi
+  COPILOT_PROFILE_ACCESS_ARGS=(--add-dir "$LOOP_PROFILE_DIR")
 }
 
 init_loop_state() {
@@ -3520,6 +3564,7 @@ BODY:
 main() {
   local labels_ready=false
   init_loop_state || { log_error "Invalid/private state or operator policy"; return 1; }
+  configure_profile_access || { log_error "Invalid/unreadable trusted profile; refusing admission"; return 1; }
   cd "$WORKSPACE_DIR" || return 1
   agent_startup_canary || { log_error "Launcher infrastructure blocked; refusing admission"; return 1; }
   log "Squad Worker starting (poll_interval=${POLL_INTERVAL}s, repo=${REPO_SLUG})"
