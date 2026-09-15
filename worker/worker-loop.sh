@@ -1047,6 +1047,7 @@ implementer_capability_instructions() {
 - Use one implementer. Do not spawn a team or simulate reviews; the outer worker supplies one independent reviewer.
 - Local shell commands, Git inspection and local commits, project builds/tests, file editing, external web research, and repository-configured MCP servers are available.
 - Work only inside the prepared workspace and current branch. Assemble the delegated work into a complete implementation; do not stop at analysis or recommendations.
+- Headless path checks resolve literal paths before compound shell commands run. Use explicit repository-root paths for log redirections and later reads, especially after a `cd`; avoid `../` paths whose intended meaning depends on that `cd`. Prefer small commands or package --prefix options. Correct a mistakenly named path only to its already-authorized workspace destination; never broaden file access or route around a genuine denial.
 - Do NOT push or use `gh`, HTTP, or MCP tools to mutate GitHub, create/update a pull request, or change issue labels. Read-only discovery may be attempted, but no repository credential is provided; the trusted outer worker exclusively owns GitHub publication.
 - You may create local commits or leave edits uncommitted. The outer worker captures both, then independently runs the complete verification and critic gates.
 - The built-in GitHub MCP is intentionally unavailable. Use the issue, Git, and failed-check context supplied by the outer worker.
@@ -3265,7 +3266,8 @@ run_verify_with_corrections() {
           GATE_NOTE="Verification failed; correction budget exhausted or baseline unproven."
           return 1
         fi ;;
-      *) GATE_NOTE="Infrastructure/verification unavailable; no code correction attempted."; return 1 ;;
+      5) GATE_NOTE="Operator policy blocked verification; no code correction attempted. ${VERIFY_LOG_TAIL}"; return 1 ;;
+      *) GATE_NOTE="Infrastructure/verification unavailable; no code correction attempted. ${VERIFY_LOG_TAIL}"; return 1 ;;
     esac
   done
 }
