@@ -73,10 +73,15 @@ gh() {
     done
     if [[ "$path" == *'/events?'* ]]; then
       if [[ "$MODE" == events-failure ]]; then return 1; fi
+      if [[ "$MODE" == events-partial-failure ]]; then cat "$TMP/approval-events"; return 1; fi
+      if [[ "$MODE" == events-page-stream ]]; then
+        jq -c '. as $events | range(0; length; 100) as $start | $events[$start:$start+100]' "$TMP/approval-events"; return
+      fi
       cat "$TMP/approval-events"; return
     fi
     if [[ "$path" == *'/issues?'* ]]; then
       [[ "$*" == *--paginate* ]] || fail 'manual queue must paginate'
+      if [[ "$MODE" == queue-partial-failure ]]; then jq -c '.[]' "$TMP/queue"; return 1; fi
       jq -c '.[]' "$TMP/queue"; return
     fi
     if [[ "$path" == *'/pulls?'* ]]; then
@@ -158,6 +163,27 @@ CURRENT_MANUAL_INTAKE=false
 [[ "$(issue_admission_class)" == unattended ]] || fail 'legacy profile context failed open'
 ok 'manual admission requires latest allowlisted human label provenance; missing/bot/revoked/API failure denied'
 
+# Actual gh 2.100 emits one merged array, not one array per HTTP page. The
+# approval at index 242 must count; a later unlabel/bot event must revoke it.
+jq '[range(242) | {event:"commented"}] + .' "$TMP/good-events" >"$TMP/approval-events"
+for representation in normal events-page-stream; do
+  MODE="$representation"
+  manual_approval_authorized 7
+  cp "$TMP/approval-events" "$TMP/long-events"
+  for mutation in '. + [.[-1] | .event="unlabeled"]' '. + [.[-1] | .actor.type="Bot"]' '. + [{}]' '. + [null]' '. + [{event:"unlabeled"}]'; do
+    jq "$mutation" "$TMP/long-events" >"$TMP/approval-events"
+    reject manual_approval_authorized 7
+  done
+  cp "$TMP/long-events" "$TMP/approval-events"
+done
+MODE=events-partial-failure; reject manual_approval_authorized 7; MODE=normal
+for invalid in '' '{}' 'null' '[[]]' '[{"event":"labeled","label":{"name":"implementation-approved"}}]'; do
+  printf '%s' "$invalid" >"$TMP/approval-events"
+  reject manual_approval_authorized 7
+done
+cp "$TMP/good-events" "$TMP/approval-events"
+ok 'merged and page-stream >100 approval events; last revocation, invalid content and partial API output fail closed'
+
 
 # Priority includes a complete REST queue, not a truncated latest-100 window.
 jq -n --argjson human "$HUMAN" '[[range(100) | {number:(1000+.),state:"open",title:"Scheduled fixture",body:"",user:{login:"scheduler",type:"Bot"},labels:[{name:"squad"},{name:"implementation-approved"}]}],
@@ -165,6 +191,16 @@ jq -n --argjson human "$HUMAN" '[[range(100) | {number:(1000+.),state:"open",tit
 selected=$(find_next_issue)
 [[ "$(jq -r .number <<<"$selected")" == 7 ]] || fail 'manual did not outrank revision/auto queue'
 if grep -q 'issue list' "$CALLS"; then fail 'manual priority queried lower-priority queue'; fi
+cp "$TMP/queue" "$TMP/queue-pages"
+jq '[add]' "$TMP/queue-pages" >"$TMP/queue"
+[[ "$(find_manual_issue | jq -r .number)" == 7 ]] || fail 'merged >100 queue lost manual issue'
+MODE=queue-partial-failure; reject find_next_issue; MODE=normal
+for invalid in '[]' '[{}]' '[null]' '[[null]]' '[[{}]]'; do
+  printf '%s' "$invalid" >"$TMP/queue"
+  reject find_manual_issue
+done
+cp "$TMP/queue-pages" "$TMP/queue"
+MODE=queue-partial-failure; reject find_next_issue; MODE=normal
 jq '.[1][0].labels += [{name:"squad:revision"},{name:"squad:failed"}]' "$TMP/queue" >"$TMP/q2"; mv "$TMP/q2" "$TMP/queue"
 [[ "$(find_next_issue | jq -r .number)" == 7 ]] || fail 'approved manual revision excluded'
 # An existing claim without a processing label must not starve the next manual issue.
@@ -267,6 +303,41 @@ reconcile_closed_wip
 reject command git --git-dir="$STORE" show-ref --verify --quiet refs/heads/squad-claims/wip
 [[ "$(command git --git-dir="$STORE" rev-parse refs/heads/squad-claims/issue-990)" == "$BASE" ]] || fail 'neighbor claim deleted'
 ok 'paginated >100 PR history, late open PR, partial/API failures, exact claim match and safe terminal release'
+
+# Exercise both CLI output representations with 243 PRs, including a late open
+# relevant PR. Even a complete-looking closed aggregate followed by API failure
+# must never release a WIP lease.
+for representation in merged pages; do
+  command git --git-dir="$STORE" update-ref refs/heads/squad-claims/wip "$FOREIGN"
+  jq -n '[range(242) | {state:"closed",head:{ref:("unrelated/"+(.|tostring))}}] + [{state:"open",head:{ref:"squad/99-late"}}]' >"$TMP/all-prs"
+  if [[ "$representation" == merged ]]; then
+    jq '[.]' "$TMP/all-prs" >"$TMP/history"
+  else
+    jq '[.[0:100],.[100:200],.[200:]]' "$TMP/all-prs" >"$TMP/history"
+  fi
+  [[ "$(wip_pull_requests | jq length)" == 243 ]] || fail "$representation lost PR history"
+  reconcile_closed_wip
+  [[ "$(command git --git-dir="$STORE" rev-parse refs/heads/squad-claims/wip)" == "$FOREIGN" ]] || fail "$representation missed late open PR"
+  jq 'map(map(.state="closed"))' "$TMP/history" >"$TMP/h2"; mv "$TMP/h2" "$TMP/history"
+  MODE=history-failure; reject reconcile_closed_wip; MODE=normal
+  [[ "$(command git --git-dir="$STORE" rev-parse refs/heads/squad-claims/wip)" == "$FOREIGN" ]] || fail "$representation partial API failure released WIP"
+  cp "$TMP/history" "$TMP/valid-history"
+  for mutation in '.[-1] += [null]' '.[-1] += [{}]' '.[-1][-1].state="unknown"' '.[-1][-1].head.ref=""'; do
+    jq "$mutation" "$TMP/valid-history" >"$TMP/history"
+    reject reconcile_closed_wip
+    [[ "$(command git --git-dir="$STORE" rev-parse refs/heads/squad-claims/wip)" == "$FOREIGN" ]] || fail 'invalid PR content released WIP'
+  done
+  cp "$TMP/valid-history" "$TMP/history"
+  reconcile_closed_wip
+  reject command git --git-dir="$STORE" show-ref --verify --quiet refs/heads/squad-claims/wip
+done
+for invalid in '[]' '[{}]' '[null]' '[[[]]]'; do
+  printf '%s' "$invalid" >"$TMP/history"
+  reject wip_pull_requests
+done
+printf '[[]]' >"$TMP/history"
+[[ "$(wip_pull_requests)" == '[]' ]] || fail 'valid empty history rejected'
+ok 'merged 243-PR aggregate and page stream preserve late WIP, reject partial/invalid history and safely release closed WIP'
 
 # Persist and resume real publication receipts; only API/check input is synthetic.
 reset_local; reset_issue 7; CURRENT_ISSUE=7
@@ -396,6 +467,36 @@ ok 'malformed/manual-with-WIP receipts stay busy; closed manual publication neve
   [[ -f "$TMP/main-dispatched" ]] || fail 'main did not dispatch manual issue'
 )
 ok 'main selects manual before revisions/generation/WIP and does not check its daily budget'
+
+# Real main dispatch, deterministic fake sleep: failed processing/admission must
+# use the configured poll interval for both new issues and revisions. The next
+# successful cycle returns to the brief inter-issue pause (no stale result).
+for dispatch in issue revision; do
+  (
+    reset_local
+    SHUTDOWN_REQUESTED=false WORKER_ID=worker-1 POLL_INTERVAL=73
+    ensure_token() { return 0; }
+    ensure_loop_labels() { return 0; }
+    agent_startup_canary() { return 0; }
+    resume_pending_publication() { return 1; }
+    find_next_issue() {
+      if [[ "$dispatch" == revision ]]; then jq '.labels += [{name:"squad:revision"}]' <<<"$HUMAN"; else echo "$HUMAN"; fi
+    }
+    pr_budget_remaining() { fail 'manual dispatch consulted budget'; }
+    attempts=0
+    result() { attempts=$((attempts+1)); [[ "$attempts" -gt 1 ]]; }
+    process_issue() { [[ "$dispatch" == issue ]] || fail 'wrong dispatch'; result; }
+    process_revision() { [[ "$dispatch" == revision ]] || fail 'wrong dispatch'; result; }
+    sleep() {
+      if [[ "$attempts" == 1 ]]; then [[ "$1" == "$POLL_INTERVAL" ]] || fail 'failure retried before normal poll interval'
+      elif [[ "$attempts" == 2 ]]; then [[ "$1" == 5 ]] || fail 'successful cycle kept stale failure'; SHUTDOWN_REQUESTED=true
+      else fail 'unexpected sleep'; fi
+    }
+    main
+    [[ "$attempts" == 2 ]] || fail 'dispatch cycle count changed'
+  )
+done
+ok 'failed issue/revision admission waits normal poll interval; successful next cycle resets the pause'
 
 # Deployment generation only (never Docker), entrypoint export, and queue equivalence.
 CONFIG="$TMP/repos.json"

@@ -1199,12 +1199,16 @@ issue_admission_class() {
 
 # Manual exemptions require current label provenance, not agent-applied labels.
 # Only the last event for each required label counts; pagination is fail-closed.
+# gh may emit one merged array or a stream of pages, regardless of per_page.
 manual_approval_authorized() {
   local number="$1" pages
   [[ "$number" =~ ^[1-9][0-9]*$ ]] || return 1
   pages=$(gh api --paginate "repos/${REPO_SLUG}/issues/${number}/events?per_page=100" | jq -s '.') || return 1
   jq -e --argjson creators "$LOOP_MANUAL_ISSUE_CREATORS" --argjson required "$LOOP_REQUIRED_LABELS" '
-    type == "array" and length > 0 and all(.[]; type == "array" and length <= 100) and
+    type == "array" and length > 0 and all(.[]; type == "array" and all(.[];
+      type == "object" and (.event | type == "string" and length > 0) and
+      (if .event == "labeled" or .event == "unlabeled" then
+        (.label.name | type == "string" and length > 0) else true end))) and
     (add as $events | all($required[]; . as $label |
       ($events | map(select((.event == "labeled" or .event == "unlabeled") and .label.name == $label)) | last) as $event |
       $event.event == "labeled" and $event.actor.type == "User" and
@@ -1266,7 +1270,8 @@ acquire_wip_slot() {
 
 # gh follows REST Link pagination and returns nonzero if any page fails. Do not
 # use the bounded gh pr list history window as proof that all PRs are closed.
-# jq slurps the page stream for older gh versions; pipefail preserves API failures.
+# jq slurps either a merged array (including >100 items) or separate page arrays;
+# per_page limits HTTP pages, not gh output chunks. pipefail preserves API failures.
 wip_pull_requests() {
   local pages
   pages=$(gh api --paginate "repos/${REPO_SLUG}/pulls?state=all&per_page=100" | jq -s '.') || {
@@ -1274,7 +1279,7 @@ wip_pull_requests() {
     return 1
   }
   jq -e 'type == "array" and length > 0 and all(.[];
-    type == "array" and length <= 100 and all(.[];
+    type == "array" and all(.[]; type == "object" and
       (.state == "open" or .state == "closed") and
       (.head.ref | type == "string" and length > 0)))' <<<"$pages" >/dev/null || {
     log_error "WIP reconciliation: invalid PR history response; autonomous admission paused"
@@ -1515,7 +1520,10 @@ find_manual_issue() {
   [[ "$(jq length <<<"$LOOP_MANUAL_ISSUE_CREATORS")" -gt 0 ]] || return 0
   local pages issues candidates claims
   pages=$(gh api --paginate "repos/${REPO_SLUG}/issues?state=open&labels=squad&per_page=100" | jq -s '.') || return 1
-  jq -e 'type == "array" and length > 0 and all(.[]; type == "array" and length <= 100)' <<<"$pages" >/dev/null || return 1
+  jq -e 'type == "array" and length > 0 and all(.[]; type == "array" and all(.[];
+    type == "object" and (.number | type == "number" and . > 0 and . == floor) and
+    (.state == "open" or .state == "closed") and
+    (.labels | type == "array" and all(.[]; .name | type == "string"))))' <<<"$pages" >/dev/null || return 1
   issues=$(jq '[.[][] | select(.pull_request == null) |
     . + {state:(.state | ascii_upcase),author:{login:.user.login,is_bot:(.user.type != "User")}}]' <<<"$pages") || return 1
   candidates=$(jq -c --argjson creators "$LOOP_MANUAL_ISSUE_CREATORS" --argjson required "$LOOP_REQUIRED_LABELS" "${MANUAL_ISSUE_FILTER}"'
@@ -3592,18 +3600,19 @@ main() {
     fi
 
     # Process the issue (errors are caught, don't crash the loop)
+    local process_succeeded=true
     if [[ "$is_revision" == "true" ]]; then
-      process_revision "$issue_json" || true
+      process_revision "$issue_json" || process_succeeded=false
     else
-      process_issue "$issue_json" "$is_auto_issue" || true
+      process_issue "$issue_json" "$is_auto_issue" || process_succeeded=false
     fi
 
     if [[ -n "$CURRENT_ISSUE" && ! -f "${LOOP_STATE_DIR}/pending.json" ]]; then
       cleanup_issue "$CURRENT_ISSUE" "${TASK_BRANCH:-unknown}" "Attempt ended without publishable evidence; explicit retry required" || true
     fi
 
-    # Brief pause between issues to avoid hammering the API
-    sleep 5
+    # Failed admission/processing uses the normal poll cadence, not a hot retry.
+    if [[ "$process_succeeded" == true ]]; then sleep 5; else sleep "$POLL_INTERVAL"; fi
   done
 }
 
