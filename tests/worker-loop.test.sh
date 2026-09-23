@@ -558,9 +558,18 @@ CORRECTIONS_USED=0
 run_and_capture_rc gate_rc run_quality_gates
 assert_eq "1" "$gate_rc" "critic infrastructure exhaustion result"
 assert_eq "true" "$PR_DRAFT" "critic infrastructure exhaustion draft flag"
-assert_eq "1" "$CRITIC_CALLS" "critic infra stops without outer retries"
+assert_eq "2" "$CRITIC_CALLS" "critic infra gets exactly one bounded fresh session"
 assert_eq "0" "$FIX_CALLS" "infrastructure failures must not trigger code changes"
 assert_contains "$GATE_NOTE" "forced critic infrastructure" "critic infrastructure retained"
+CRITIC_CALLS=0
+FIX_CALLS=0
+CORRECTIONS_USED=0
+LOOP_CRITIC_ATTEMPTS=1
+run_and_capture_rc gate_rc run_quality_gates
+assert_eq "1" "$gate_rc" "single-attempt critic infrastructure result"
+assert_eq "1" "$CRITIC_CALLS" "LOOP_CRITIC_ATTEMPTS=1 disables critic retry"
+assert_eq "0" "$FIX_CALLS" "single-attempt infra failure triggers no code changes"
+LOOP_CRITIC_ATTEMPTS=2
 pass "critic infrastructure exhaustion is explicit and fails closed"
 
 LOOP_VERIFY=off
