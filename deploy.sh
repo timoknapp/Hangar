@@ -70,6 +70,21 @@ generate_compose() {
     jq -Rn --arg value "$1" '$value'
   }
 
+  # Validate the opt-in exemption before writing any generated configuration.
+  jq -e 'all(.[]; (.loop // {}) as $p |
+    (if $p | has("manualIssueCreators") then $p.manualIssueCreators else [] end) as $creators |
+    ($p.requiredLabels // []) as $required |
+    ($creators | type == "array" and length <= 64 and
+      all(.[]; type == "string" and test("^[A-Za-z0-9]([A-Za-z0-9-]{0,37}[A-Za-z0-9])?$")) and
+      (map(ascii_downcase) | length == (unique | length))) and
+    (($creators | length) == 0 or
+      ($required | type == "array" and length > 0 and
+        all(.[]; type == "string" and test("[^[:space:]]") and
+          (test("^squad(:|$)|^loop:auto$") | not)))))' "$REPOS_JSON" >/dev/null || {
+    echo "Invalid manual creator allowlist or missing explicit approval labels" >&2
+    return 1
+  }
+
   # Header
   cat > "$COMPOSE_FILE" <<'HEADER'
 # =============================================================================
@@ -111,6 +126,8 @@ HEADER
 
     local LOOP_REQUIRED_LABELS
     LOOP_REQUIRED_LABELS=$(jq -c --arg w "$WORKER_ID" '.[$w].loop.requiredLabels // []' "$REPOS_JSON")
+    local LOOP_MANUAL_ISSUE_CREATORS
+    LOOP_MANUAL_ISSUE_CREATORS=$(jq -c --arg w "$WORKER_ID" '.[$w].loop.manualIssueCreators // []' "$REPOS_JSON")
     local LOOP_UNATTENDED_LABELS
     LOOP_UNATTENDED_LABELS=$(jq -c --arg w "$WORKER_ID" '.[$w].loop.unattendedLabels // ["loop:auto"]' "$REPOS_JSON")
     local LOOP_REQUIRED_CHECKS
@@ -166,6 +183,7 @@ HEADER
       - $(yaml_quote "LOOP_CRITIC_RUBRIC=${LOOP_CRITIC_RUBRIC}")
       - $(yaml_quote "LOOP_IMPLEMENTER=${LOOP_IMPLEMENTER}")
       - $(yaml_quote "LOOP_REQUIRED_LABELS=${LOOP_REQUIRED_LABELS}")
+      - $(yaml_quote "LOOP_MANUAL_ISSUE_CREATORS=${LOOP_MANUAL_ISSUE_CREATORS}")
       - $(yaml_quote "LOOP_UNATTENDED_LABELS=${LOOP_UNATTENDED_LABELS}")
       - $(yaml_quote "LOOP_REQUIRED_CHECKS=${LOOP_REQUIRED_CHECKS}")
       - $(yaml_quote "LOOP_MAX_ACTIVE_ISSUES=${LOOP_MAX_ACTIVE_ISSUES}")

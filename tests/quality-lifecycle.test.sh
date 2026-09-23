@@ -358,3 +358,12 @@ reject remote_checks_ready "$snapshot"
 ACTIONS_MODE=denied
 reject read_pr_snapshot feature
 ok 'Actions backend handles inaccessible check rollup without skipping workflows/jobs'
+
+# A policy refusal stays terminal and is reported as policy, not infrastructure.
+(
+  run_verify_gate() { VERIFY_LOG_TAIL='fixture authorization revoked'; return 5; }
+  take_correction() { fail 'policy refusal entered a code correction'; }
+  reject run_verify_with_corrections
+  [[ "$GATE_NOTE" == 'Operator policy blocked verification; no code correction attempted. fixture authorization revoked' ]] || fail 'policy diagnostic lost'
+)
+ok 'operator policy failure stays terminal with precise diagnosis'

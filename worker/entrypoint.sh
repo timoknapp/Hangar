@@ -238,6 +238,7 @@ write_workspace_export() {
   write_workspace_export LOOP_CRITIC_RUBRIC "${LOOP_CRITIC_RUBRIC:-auto}"
   write_workspace_export LOOP_IMPLEMENTER "${LOOP_IMPLEMENTER:-plain}"
   write_workspace_export LOOP_REQUIRED_LABELS "${LOOP_REQUIRED_LABELS:-[]}"
+  write_workspace_export LOOP_MANUAL_ISSUE_CREATORS "${LOOP_MANUAL_ISSUE_CREATORS:-[]}"
   write_workspace_export LOOP_UNATTENDED_LABELS "${LOOP_UNATTENDED_LABELS:-[\"loop:auto\"]}"
   write_workspace_export LOOP_REQUIRED_CHECKS "${LOOP_REQUIRED_CHECKS:-[]}"
   write_workspace_export LOOP_MAX_ACTIVE_ISSUES "${LOOP_MAX_ACTIVE_ISSUES:-0}"
