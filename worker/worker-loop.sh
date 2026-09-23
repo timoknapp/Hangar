@@ -308,6 +308,18 @@ remove_repo_file_as_agent() {
     /usr/bin/rm -f -- "$candidate"
 }
 
+# Model/verify phases can outlive the ~60 min GitHub App installation token
+# (a single correction session ran 83 min). Refresh a stale publisher token
+# immediately after every protected phase, before any publisher gh/git call.
+# Silent on purpose: callers redirect this function's streams into agent
+# evidence files that are parsed as JSONL. Only refreshes a token this process
+# generated; a failure is surfaced by the next regular ensure_token call.
+refresh_stale_publisher_token() {
+  (( TOKEN_GENERATED_AT > 0 )) || return 0
+  (( $(date +%s) - TOKEN_GENERATED_AT >= TOKEN_REFRESH_SECS )) || return 0
+  ensure_token >/dev/null 2>&1 || true
+}
+
 # Execute Copilot as the unprivileged coding user. Only the CLI process receives
 # the Copilot credential; named secrets are stripped from shell/MCP environments
 # and the selected session policy controls implementation capabilities.
@@ -322,6 +334,7 @@ run_agent_copilot() {
   printf '%s' "$token" | timeout --kill-after=10 "$remaining" \
     sudo -n /usr/local/bin/agent-launch copilot "${COPILOT_PROFILE_ACCESS_ARGS[@]}" "$@" || process_rc=$?
   terminate_agent_processes || fatal_agent_isolation_breach
+  refresh_stale_publisher_token
   return "$process_rc"
 }
 
@@ -336,6 +349,7 @@ run_agent_command() {
   timeout --kill-after=10 "$remaining" sudo -n /usr/local/bin/agent-launch \
     command "$command_text" </dev/null || process_rc=$?
   terminate_agent_processes || fatal_agent_isolation_breach
+  refresh_stale_publisher_token
   return "$process_rc"
 }
 

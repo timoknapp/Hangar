@@ -55,3 +55,23 @@ cp "$TMP/args" "$TMP/before"
 reject run_agent_copilot synthetic-inference-token -p rejected
 cmp "$TMP/args" "$TMP/before"
 echo 'PASS: exact path grant through real run_agent_copilot wiring, no blanket permissions, invalid profile fails before launcher'
+# Long protected phases must not leave the publisher with an expired token,
+# and the refresh must never write into the (JSONL-parsed) evidence streams.
+MOUNT_OPTIONS=ro,relatime
+REFRESHES=0
+ensure_token() { REFRESHES=$((REFRESHES + 1)); echo 'refresh log line'; echo 'refresh stderr' >&2; TOKEN_GENERATED_AT=$(date +%s); }
+TOKEN_REFRESH_SECS=3000
+TOKEN_GENERATED_AT=$(( $(date +%s) - 3600 ))
+run_agent_copilot synthetic-inference-token -p fixture >"$TMP/stale-out" 2>&1
+[[ "$REFRESHES" == 1 ]] || fail 'stale token not refreshed after long model phase'
+if grep -q refresh "$TMP/stale-out"; then fail 'token refresh polluted agent evidence stream'; fi
+run_agent_copilot synthetic-inference-token -p fixture >/dev/null 2>&1
+[[ "$REFRESHES" == 1 ]] || fail 'fresh token refreshed needlessly'
+TOKEN_GENERATED_AT=$(( $(date +%s) - 3600 ))
+run_agent_command 'true' >"$TMP/stale-cmd" 2>&1 || true
+[[ "$REFRESHES" == 2 ]] || fail 'stale token not refreshed after long command phase'
+if grep -q refresh "$TMP/stale-cmd"; then fail 'token refresh polluted command evidence'; fi
+TOKEN_GENERATED_AT=0
+run_agent_command 'true' >/dev/null 2>&1 || true
+[[ "$REFRESHES" == 2 ]] || fail 'refresh attempted without a generated publisher token'
+echo 'PASS: stale publisher token refreshed after long protected phases, silently and only when generated'
