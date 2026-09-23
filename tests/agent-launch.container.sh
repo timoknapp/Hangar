@@ -22,6 +22,7 @@ done
 test "$(awk '$1=="NoNewPrivs:" {print $2}' /proc/self/status)" = 1
 test "$(id -G | wc -w)" = 1
 test "$HOME" = /home/squad-agent
+test "$COPILOT_TASK_WAIT_TIMEOUT_SECONDS" = 86400
 if env | cut -d= -f1 | grep -Eq '^(GH_TOKEN|GITHUB_TOKEN|COPILOT_PAT|PUBLISHER_MARKER)$'; then exit 1; fi
 ! cat /home/copilot/publisher-fixture 2>/dev/null
 ! sudo -n /usr/local/bin/agent-launch command true 2>/dev/null

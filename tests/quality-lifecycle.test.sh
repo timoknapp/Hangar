@@ -56,6 +56,20 @@ reject prepare_task_base checkout-fails
 unset -f git
 eval "$(sed -n '/^git() {/,/^}/p' "$ROOT/worker/worker-loop.sh")"
 ok 'fetch and checkout failures propagate; no suppressed reset'
+# A retained blocked attempt branch must not block the next fresh attempt forever.
+git checkout -q --detach "$BASE"
+git checkout -qb retained-attempt
+printf 'unpublished\n' > retained.txt
+git add retained.txt && git commit -qm 'retained unpublished work'
+RETAINED=$(git rev-parse HEAD)
+git checkout -q --detach "$BASE"
+begin_task
+prepare_task_base retained-attempt || fail 'retained local branch blocked fresh attempt'
+[[ "$(git rev-parse HEAD)" == "$TASK_BASE_SHA" && "$(git branch --show-current)" == retained-attempt ]] || fail 'fresh branch not at base'
+archived=$(git for-each-ref --format='%(refname:short) %(objectname)' 'refs/heads/squad-archive/retained-attempt-*')
+[[ "$archived" == *" $RETAINED" ]] || fail 'retained commits not archived'
+git checkout -q feature; git branch -q -D retained-attempt
+ok 'retained unpublished branch is archived, never deleted, before fresh attempt'
 TASK_BASE_SHA="$BASE" TASK_START_HEAD="$BASE" TASK_BRANCH=feature
 printf 'changed\n' > app.txt
 git commit -qam change
@@ -100,6 +114,21 @@ reject run_critic
 LOOP_MAX_REVIEW_BYTES=262144
 git restore .squad/GOVERNANCE.md
 ok 'full late diff and base policy plus actual body reviewed; oversize fails closed'
+# Screenshots must not flood the critic with base85 patch lines.
+python3 -c 'import os,sys; sys.stdout.buffer.write(b"\x89PNG\r\n\x1a\n"+os.urandom(60000))' > shot.png
+git add shot.png && git commit -qm 'binary evidence'
+PNG_BLOB=$(git rev-parse HEAD:shot.png)
+run_agent_copilot() {
+  local input
+  input=$(find "$WORKSPACE_DIR" -maxdepth 1 -name '.critic-input.*.md')
+  grep -q 'GIT binary patch' "$input" && fail 'binary payload sent to critic'
+  grep -q "Binary files .*shot.png differ" "$input" || fail 'binary change not listed'
+  grep -q "index 0\{40\}\.\.${PNG_BLOB}" "$input" || fail 'binary blob not bound by full ID'
+  (( $(wc -l < "$input") < 2500 )) || fail 'binary inflated critic input'
+  bash "$ROOT/tests/critic-complete-input.test.sh" --emit "$input"
+}
+run_critic || fail 'binary-only addition blocked review'
+ok 'binary files reviewed by full blob ID, not base85 payload'
 FINAL_PR_BODY='### UI evidence
 ![actual view](evidence-fixture/images/screen.png)
 ![unapproved](other-fixture/screen.png)'

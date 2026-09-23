@@ -199,6 +199,8 @@ squad_capabilities=$(implementer_capability_instructions)
 assert_contains "$squad_capabilities" 'one implementer' "Squad limits implementation cast"
 # shellcheck disable=SC2016 # Backticks are literal prompt text.
 assert_contains "$squad_capabilities" 'one independent reviewer' "Outer independent review is not simulated"
+assert_contains "$squad_capabilities" 'synchronously' "Squad delegation must not be abandoned in background"
+assert_contains "$squad_capabilities" 'read_agent with wait' "Squad waits for any background agent"
 assert_contains "$squad_capabilities" 'project builds/tests' "Squad prompt exposes local verification tools"
 assert_contains "$squad_capabilities" 'repository-configured MCP servers' "Squad prompt exposes workspace MCPs"
 configure_workspace_mcp_args
