@@ -68,7 +68,11 @@ int main(int argc, char **argv) {
         {"HOME", "/home/squad-agent"}, {"USER", "squad-agent"}, {"LOGNAME", "squad-agent"},
         {"PATH", "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"},
         {"LANG", "C.UTF-8"}, {"LC_ALL", "C.UTF-8"}, {"CI", "true"},
-        {"NO_COLOR", "1"}, {"NPM_CONFIG_CACHE", "/home/squad-agent/.npm"}
+        {"NO_COLOR", "1"}, {"NPM_CONFIG_CACHE", "/home/squad-agent/.npm"},
+        /* Prompt mode otherwise abandons still-running background agents after
+         * 600s and exits "successfully" without their work. The publisher's
+         * task-deadline timeout remains the authoritative upper bound. */
+        {"COPILOT_TASK_WAIT_TIMEOUT_SECONDS", "86400"}
     };
     for (size_t i = 0; i < sizeof(env) / sizeof(env[0]); i++) {
         if (setenv(env[i][0], env[i][1], 1)) die("environment");

@@ -199,6 +199,8 @@ squad_capabilities=$(implementer_capability_instructions)
 assert_contains "$squad_capabilities" 'one implementer' "Squad limits implementation cast"
 # shellcheck disable=SC2016 # Backticks are literal prompt text.
 assert_contains "$squad_capabilities" 'one independent reviewer' "Outer independent review is not simulated"
+assert_contains "$squad_capabilities" 'synchronously' "Squad delegation must not be abandoned in background"
+assert_contains "$squad_capabilities" 'read_agent with wait' "Squad waits for any background agent"
 assert_contains "$squad_capabilities" 'project builds/tests' "Squad prompt exposes local verification tools"
 assert_contains "$squad_capabilities" 'repository-configured MCP servers' "Squad prompt exposes workspace MCPs"
 configure_workspace_mcp_args
@@ -556,9 +558,18 @@ CORRECTIONS_USED=0
 run_and_capture_rc gate_rc run_quality_gates
 assert_eq "1" "$gate_rc" "critic infrastructure exhaustion result"
 assert_eq "true" "$PR_DRAFT" "critic infrastructure exhaustion draft flag"
-assert_eq "1" "$CRITIC_CALLS" "critic infra stops without outer retries"
+assert_eq "2" "$CRITIC_CALLS" "critic infra gets exactly one bounded fresh session"
 assert_eq "0" "$FIX_CALLS" "infrastructure failures must not trigger code changes"
 assert_contains "$GATE_NOTE" "forced critic infrastructure" "critic infrastructure retained"
+CRITIC_CALLS=0
+FIX_CALLS=0
+CORRECTIONS_USED=0
+LOOP_CRITIC_ATTEMPTS=1
+run_and_capture_rc gate_rc run_quality_gates
+assert_eq "1" "$gate_rc" "single-attempt critic infrastructure result"
+assert_eq "1" "$CRITIC_CALLS" "LOOP_CRITIC_ATTEMPTS=1 disables critic retry"
+assert_eq "0" "$FIX_CALLS" "single-attempt infra failure triggers no code changes"
+LOOP_CRITIC_ATTEMPTS=2
 pass "critic infrastructure exhaustion is explicit and fails closed"
 
 LOOP_VERIFY=off

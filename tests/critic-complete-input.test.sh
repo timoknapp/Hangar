@@ -212,6 +212,30 @@ if validate_critic_delivery "$TMP/input.md" "$TMP/oversize-events.jsonl" fixture
   fail 'oversize event stream accepted'
 fi
 echo 'PASS: event parser byte ceiling fails closed'
+# Non-review critic failures get one fresh, fully re-proven session.
+CRITIC_CALLS=0
+run_critic() {
+  CRITIC_CALLS=$((CRITIC_CALLS + 1))
+  if (( CRITIC_CALLS == 1 )); then CRITIC_FAILURE_KIND=incomplete; CRITIC_FEEDBACK='content filter'; return 1; fi
+  CRITIC_FAILURE_KIND=""; return 0
+}
+LOOP_CRITIC_ATTEMPTS=2
+run_critic_attempts || fail 'transient critic failure not retried'
+[[ "$CRITIC_CALLS" == 2 ]] || fail 'unexpected critic attempt count'
+CRITIC_CALLS=0
+run_critic() { CRITIC_CALLS=$((CRITIC_CALLS + 1)); CRITIC_FAILURE_KIND=review; CRITIC_FEEDBACK='fix it'; return 1; }
+if run_critic_attempts; then fail 'review verdict accepted'; fi
+[[ "$CRITIC_CALLS" == 1 ]] || fail 'REQUEST_CHANGES re-rolled for approval'
+CRITIC_CALLS=0
+run_critic() { CRITIC_CALLS=$((CRITIC_CALLS + 1)); CRITIC_FAILURE_KIND=incomplete; CRITIC_FEEDBACK='Complete review exceeds configured byte budget'; return 1; }
+if run_critic_attempts; then fail 'oversize accepted'; fi
+[[ "$CRITIC_CALLS" == 1 ]] || fail 'deterministic oversize retried'
+CRITIC_CALLS=0
+run_critic() { CRITIC_CALLS=$((CRITIC_CALLS + 1)); CRITIC_FAILURE_KIND=incomplete; CRITIC_FEEDBACK='gap'; return 1; }
+if run_critic_attempts; then fail 'persistent incomplete accepted'; fi
+[[ "$CRITIC_CALLS" == 2 ]] || fail 'retry not bounded'
+LOOP_CRITIC_ATTEMPTS=1
+echo 'PASS: fresh critic retry is bounded, never re-rolls REQUEST_CHANGES or oversize'
 # Existing lifecycle must not try to repair code for missing transport evidence.
 run_verify_with_corrections() { return 0; }
 CRITIC_REACHED=false
