@@ -396,3 +396,107 @@ ok 'Actions backend handles inaccessible check rollup without skipping workflows
   [[ "$GATE_NOTE" == 'Operator policy blocked verification; no code correction attempted. fixture authorization revoked' ]] || fail 'policy diagnostic lost'
 )
 ok 'operator policy failure stays terminal with precise diagnosis'
+
+# Stale revision branches: another PR merged into the default branch after the
+# revision branch was published. Integrate instead of blocking; conflicts are
+# bounded, announced to the implementer and enforced after its session.
+(
+  R2="$TMP/rev-remote" W2="$TMP/rev-work"
+  command git init --bare -q "$R2"
+  command git init -q "$W2"
+  cd "$W2"
+  WORKSPACE_DIR="$W2" CLEAN_REPO_URL="$R2"
+  mkdir -p .squad
+  printf 'active policy\n' > .squad/GOVERNANCE.md
+  printf 'v1\n' > notes.txt
+  git add . && git commit -qm base && git branch -M main
+  git remote add origin "$R2"
+  git push -q origin main
+  git checkout -qb rev
+  printf 'feature\n' > feature.txt
+  git add feature.txt && git commit -qm feature
+  git push -q origin rev
+  REV1=$(git rev-parse HEAD)
+  git checkout -q main
+  printf 'other\n' > other.txt
+  git add other.txt && git commit -qm 'other PR merged'
+  git push -q origin main
+  MAIN2=$(git rev-parse HEAD)
+  git checkout -q --detach "$MAIN2"
+  git branch -q -D rev
+
+  begin_task
+  prepare_task_base rev true || fail 'clean stale revision blocked'
+  [[ "$REVISION_BASE_MODE" == merged ]] || fail "expected merged, got $REVISION_BASE_MODE"
+  [[ "$TASK_BASE_SHA" == "$MAIN2" && "$TASK_START_HEAD" == "$REV1" ]] || fail 'base/start pinning'
+  [[ "$(git rev-parse HEAD^1)" == "$REV1" && "$(git rev-parse HEAD^2)" == "$MAIN2" ]] || fail 'merge parents'
+  [[ -f other.txt && -f feature.txt && "$(git branch --show-current)" == rev ]] || fail 'merged tree/branch'
+  task_integrity || fail 'integrity after clean integration'
+  finish_revision_base_integration || fail 'clean integration needs no resolution'
+  revision_base_prompt | grep -q 'already done by the worker' || fail 'merged prompt'
+  ok 'stale revision without conflicts gets a worker merge of the fresh base'
+
+  # Conflicting metadata (e.g. two PRs claiming the same release entry).
+  git checkout -q -B rev2 "$MAIN2"
+  printf 'v1\nrev2 entry\n' > notes.txt
+  git commit -qam rev2
+  git push -q origin rev2
+  REV2=$(git rev-parse HEAD)
+  git checkout -q main
+  printf 'v1\nmain entry\n' > notes.txt
+  git commit -qam 'main entry'
+  git push -q origin main
+  MAIN3=$(git rev-parse HEAD)
+  git checkout -q --detach "$MAIN3"
+  git branch -q -D rev2
+  (LOOP_MAX_BASE_CONFLICTS=0; reject integrate_revision_base rev2 "$MAIN3" "$REV2")
+  begin_task
+  prepare_task_base rev2 true || fail 'conflicting stale revision blocked before implementer'
+  [[ "$REVISION_BASE_MODE" == conflict && "$REVISION_BASE_CONFLICTS" == notes.txt ]] || fail 'conflict classification'
+  [[ "$(git rev-parse HEAD)" == "$REV2" && "$TASK_START_HEAD" == "$REV2" ]] || fail 'conflict start head'
+  task_integrity || fail 'announced pending conflict rejected before implementer'
+  reject finish_revision_base_integration
+  prompt=$(revision_base_prompt)
+  [[ "$prompt" == *"git merge --no-ff $MAIN3"* && "$prompt" == *"- notes.txt"* ]] || fail 'conflict prompt'
+  # Implementer commits conflict markers: never accepted as a resolution.
+  git merge --no-ff "$MAIN3" >/dev/null 2>&1 || true
+  git add notes.txt && git commit -q --no-edit
+  reject finish_revision_base_integration
+  # Proper resolution keeps both entries.
+  printf 'v1\nmain entry\nrev2 entry\n' > notes.txt
+  git commit -qam 'resolve release notes'
+  finish_revision_base_integration || fail 'resolved integration rejected'
+  [[ "$REVISION_BASE_MODE" == resolved ]] || fail 'resolution not recorded'
+  task_integrity || fail 'integrity after resolution'
+  ok 'conflicting stale revision is handed to the implementer and enforced afterwards'
+
+  # A local revision branch left behind by an earlier attempt: fast-forward when
+  # published, archive (never delete) when it carries unpublished commits.
+  git checkout -q -B rev3 "$MAIN3"
+  printf 'three\n' > three.txt
+  git add three.txt && git commit -qm three
+  OLD3=$(git rev-parse HEAD)
+  printf 'three more\n' >> three.txt
+  git commit -qam 'three more'
+  git push -q origin rev3
+  PUB3=$(git rev-parse HEAD)
+  git checkout -q --detach "$MAIN3"
+  git branch -q -f rev3 "$OLD3"
+  begin_task
+  prepare_task_base rev3 true || fail 'published-behind local branch blocked'
+  [[ "$REVISION_BASE_MODE" == contained && "$(git rev-parse HEAD)" == "$PUB3" ]] || fail 'fast-forward'
+  git checkout -q --detach "$MAIN3"
+  git branch -q -f rev3 "$MAIN3"
+  git checkout -q rev3
+  printf 'unpublished\n' > local.txt
+  git add local.txt && git commit -qm unpublished
+  LOCAL3=$(git rev-parse HEAD)
+  git checkout -q --detach "$MAIN3"
+  begin_task
+  prepare_task_base rev3 true || fail 'diverged local branch blocked'
+  [[ "$(git rev-parse HEAD)" == "$PUB3" ]] || fail 'published head not checked out'
+  archived=$(git for-each-ref --format='%(objectname)' 'refs/heads/squad-archive/rev3-*')
+  [[ "$archived" == "$LOCAL3" ]] || fail 'unpublished local work not archived'
+  ok 'stale local revision branches are fast-forwarded or archived, never deleted'
+)
+

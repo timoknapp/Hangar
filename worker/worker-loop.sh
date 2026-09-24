@@ -87,6 +87,11 @@ LOOP_STATE_DIR="${LOOP_STATE_DIR:-/home/copilot/.local/share/hangar-loop}"
 TASK_BASE_SHA=""
 TASK_BRANCH=""
 TASK_START_HEAD=""
+# Revision branches that predate the current default branch: contained|merged|conflict|resolved.
+REVISION_BASE_MODE=""
+REVISION_BASE_CONFLICTS=""
+REVISION_MERGE_COMMIT=""
+LOOP_MAX_BASE_CONFLICTS="${LOOP_MAX_BASE_CONFLICTS:-40}"
 TASK_DEADLINE=0
 CORRECTIONS_USED=0
 BASE_VERIFY_OK=false
@@ -792,6 +797,7 @@ begin_task() {
   BASE_VERIFY_OK=false
   VERIFIED_HEAD="" REVIEWED_HEAD="" REVIEW_BODY_HASH="" FINAL_PR_BODY=""
   TASK_BASE_SHA="" TASK_BRANCH="" TASK_START_HEAD=""
+  REVISION_BASE_MODE="" REVISION_BASE_CONFLICTS="" REVISION_MERGE_COMMIT=""
 }
 
 workspace_clean() {
@@ -810,7 +816,7 @@ fetch_task_base() {
 }
 
 prepare_task_base() {
-  local branch="$1" revision="${2:-false}" base remote_head
+  local branch="$1" revision="${2:-false}" base remote_head local_head
   workspace_clean || { log_error "Workspace is dirty; preserve/recover it explicitly before retry"; return 1; }
   base=$(fetch_task_base) || return 1
   TASK_BASE_SHA="$base"
@@ -818,18 +824,36 @@ prepare_task_base() {
     git fetch --no-tags origin "+refs/heads/${branch}:refs/remotes/origin/${branch}" || return 1
     remote_head=$(git rev-parse --verify "refs/remotes/origin/${branch}^{commit}") || return 1
     check_repository_evidence index "$remote_head" || return 1
-    git merge-base --is-ancestor "$base" "$remote_head" || {
-      log_error "Revision does not contain fresh base; explicit human rebase/recovery required"; return 1;
-    }
+    # Another PR merged since this revision branch was published. Integrate the
+    # fresh base instead of blocking: a clean merge is done here, conflicts are
+    # handed to the implementer and enforced after its session.
+    if git merge-base --is-ancestor "$base" "$remote_head"; then
+      REVISION_BASE_MODE=contained
+    else
+      integrate_revision_base "$branch" "$base" "$remote_head" || return 1
+    fi
     if git show-ref --verify --quiet "refs/heads/${branch}"; then
-      [[ "$(git rev-parse "$branch")" == "$remote_head" ]] || {
-        log_error "Local revision branch differs; unpublished work retained"; return 1;
-      }
-      git checkout --no-overwrite-ignore "$branch" || return 1
+      local_head=$(git rev-parse --verify "refs/heads/${branch}^{commit}") || return 1
+      if [[ "$local_head" == "$remote_head" ]]; then
+        git checkout --no-overwrite-ignore "$branch" || return 1
+      elif git merge-base --is-ancestor "$local_head" "$remote_head"; then
+        # Left behind by an earlier attempt; everything on it is already published.
+        git checkout --no-overwrite-ignore "$branch" || return 1
+        git merge --ff-only "$remote_head" >/dev/null || return 1
+        log "Fast-forwarded stale local revision branch ${branch} to ${remote_head:0:12}"
+      else
+        git checkout --no-overwrite-ignore --detach "$remote_head" || return 1
+        archive_unpublished_task_branch "$branch" || return 1
+        git checkout --no-overwrite-ignore -b "$branch" "$remote_head" || return 1
+      fi
     else
       git checkout --no-overwrite-ignore -b "$branch" "$remote_head" || return 1
     fi
     [[ "$(git rev-parse HEAD)" == "$remote_head" ]] || return 1
+    if [[ "$REVISION_BASE_MODE" == merged ]]; then
+      git merge --ff-only --no-edit "$REVISION_MERGE_COMMIT" >/dev/null || return 1
+      [[ "$(git rev-parse HEAD)" == "$REVISION_MERGE_COMMIT" ]] || return 1
+    fi
   else
     # A new branch from the exact fetched commit needs no destructive reset or clean.
     git checkout --no-overwrite-ignore --detach "$base" || return 1
@@ -843,8 +867,77 @@ prepare_task_base() {
   fi
   workspace_clean || return 1
   TASK_BRANCH="$branch"
-  TASK_START_HEAD=$(git rev-parse HEAD) || return 1
+  # The published revision head stays the push lease and history start, even
+  # when the worker added a base-integration merge on top of it.
+  if [[ -n "${remote_head:-}" ]]; then TASK_START_HEAD="$remote_head"; else TASK_START_HEAD=$(git rev-parse HEAD) || return 1; fi
   task_integrity
+}
+
+# Decide how a stale revision branch absorbs the fresh base without touching the
+# worktree: merge-tree computes the result; a clean result becomes a worker merge
+# commit, conflicts become a bounded, validated file list for the implementer.
+integrate_revision_base() {
+  local branch="$1" base="$2" head="$3" out rc=0 tree f
+  local -a rows=() files=()
+  REVISION_MERGE_COMMIT="" REVISION_BASE_CONFLICTS=""
+  out=$(secure_temp_file merge-tree) || return 1
+  git merge-tree --write-tree -z --name-only --no-messages "$base" "$head" >"$out" || rc=$?
+  mapfile -d '' -t rows <"$out"; rm -f "$out"
+  tree="${rows[0]:-}"
+  [[ "$tree" =~ ^[0-9a-f]{40}$ ]] || { log_error "Revision base integration could not be computed"; return 1; }
+  case "$rc" in
+    0)
+      REVISION_MERGE_COMMIT=$(git commit-tree "$tree" -p "$head" -p "$base" \
+        -m "Merge ${DEFAULT_BRANCH} into ${branch}" \
+        -m "Automatic base integration by Squad Worker ${WORKER_ID}: the revision branch predated ${DEFAULT_BRANCH} ${base}.") || return 1
+      REVISION_BASE_MODE=merged
+      log "Revision branch predated ${DEFAULT_BRANCH}; merged ${base:0:12} cleanly"
+      ;;
+    1)
+      for f in "${rows[@]:1}"; do
+        [[ -n "$f" ]] || continue
+        [[ "$f" != *[[:cntrl:]]* ]] || { log_error "Revision base conflict has an unsupported path"; return 1; }
+        files+=("$f")
+      done
+      (( ${#files[@]} > 0 )) || { log_error "Revision base conflict without conflicting paths"; return 1; }
+      if (( ${#files[@]} > LOOP_MAX_BASE_CONFLICTS )); then
+        log_error "Revision base integration has ${#files[@]} conflicting files (limit ${LOOP_MAX_BASE_CONFLICTS}); explicit human rebase required"
+        return 1
+      fi
+      REVISION_BASE_CONFLICTS=$(printf '%s\n' "${files[@]}")
+      REVISION_BASE_MODE=conflict
+      log "Revision branch predated ${DEFAULT_BRANCH}; ${#files[@]} conflicting file(s) handed to the implementer"
+      ;;
+    *) log_error "Revision base integration failed (merge-tree exit ${rc})"; return 1 ;;
+  esac
+}
+
+# After the implementer: a conflicting base integration must now be contained.
+finish_revision_base_integration() {
+  local -a files=()
+  [[ "$REVISION_BASE_MODE" == conflict ]] || return 0
+  git merge-base --is-ancestor "$TASK_BASE_SHA" HEAD || return 1
+  [[ "$(git merge-base "$TASK_BASE_SHA" HEAD)" == "$TASK_BASE_SHA" ]] || return 1
+  mapfile -t files <<<"$REVISION_BASE_CONFLICTS"
+  if git grep -q -E '^(<<<<<<<|>>>>>>>)( |$)' HEAD -- "${files[@]}"; then
+    log_error "Revision committed unresolved conflict markers"
+    return 1
+  fi
+  REVISION_BASE_MODE=resolved
+}
+
+revision_base_prompt() {
+  case "$REVISION_BASE_MODE" in
+    merged)
+      printf '## Fresh Base Integration (already done by the worker)\n\nThis branch predated the current %s (%s). The worker merged it cleanly (merge commit %s). Check that the combined result is still correct, especially metadata both sides may have touched (package versions, changelogs, release notes, migrations), and adjust it if needed. Do not rebase or rewrite existing commits.\n' \
+        "$DEFAULT_BRANCH" "$TASK_BASE_SHA" "$REVISION_MERGE_COMMIT"
+      ;;
+    conflict)
+      # shellcheck disable=SC2016 # backticks are literal Markdown for the agent
+      printf '## REQUIRED FIRST: Integrate the Current %s\n\nThis branch does not contain the current %s (%s); merging it conflicts in:\n\n%s\n\nBefore any other change run exactly `git merge --no-ff %s`, resolve every conflict so that both sides keep their intent, then `git add` the files and `git commit --no-edit`. For versioned metadata (package versions, lockfiles, changelogs, release notes) keep the entries already on %s unchanged and put this branch'"'"'s entry on top as the next version, unless the revision requests say otherwise. Never rebase, reset or rewrite existing commits and never push. The worker blocks the revision unless %s is an ancestor of HEAD afterwards.\n' \
+        "$DEFAULT_BRANCH" "$DEFAULT_BRANCH" "$TASK_BASE_SHA" "- ${REVISION_BASE_CONFLICTS//$'\n'/$'\n'- }" "$TASK_BASE_SHA" "$DEFAULT_BRANCH" "$TASK_BASE_SHA"
+      ;;
+  esac
 }
 
 # Rename (never delete) a retained local task branch. Only reached from a clean,
@@ -862,8 +955,12 @@ task_integrity() {
   check_repository_evidence metadata && check_repository_evidence index || return 1
   [[ -n "$TASK_BASE_SHA" && -n "$TASK_BRANCH" ]] || return 1
   [[ "$(git branch --show-current)" == "$TASK_BRANCH" ]] || return 1
-  git merge-base --is-ancestor "$TASK_BASE_SHA" HEAD || return 1
-  [[ "$(git merge-base "$TASK_BASE_SHA" HEAD)" == "$TASK_BASE_SHA" ]] || return 1
+  # Only an announced, still-pending base conflict may lack the base; it must be
+  # resolved before quality gates (finish_revision_base_integration).
+  if [[ "$REVISION_BASE_MODE" != conflict ]]; then
+    git merge-base --is-ancestor "$TASK_BASE_SHA" HEAD || return 1
+    [[ "$(git merge-base "$TASK_BASE_SHA" HEAD)" == "$TASK_BASE_SHA" ]] || return 1
+  fi
   git merge-base --is-ancestor "$TASK_START_HEAD" HEAD
 }
 
@@ -2143,7 +2240,8 @@ process_revision() {
     cleanup_issue "$issue_num" "$branch_name" "Could not reset revision scratch metadata safely"
     return 1
   fi
-  revision_start_head=$(git rev-parse HEAD)
+  # A worker base-integration merge is itself a publishable revision change.
+  revision_start_head="$TASK_START_HEAD"
   log "Workspace at $(git log --oneline -1)"
 
   # Fetch the latest comments from the issue (last 10, excluding bot comments)
@@ -2178,8 +2276,9 @@ process_revision() {
   fi
 
   # Build revision prompt with comment context
-  local prompt implementation_context failed_check_context capability_instructions
+  local prompt implementation_context failed_check_context capability_instructions base_integration
   implementation_context=$(generate_implementation_context)
+  base_integration=$(revision_base_prompt)
   failed_check_context=$(collect_failed_check_context "$branch_name")
   capability_instructions=$(implementer_capability_instructions)
   if ! refresh_issue_evidence; then
@@ -2196,6 +2295,8 @@ ${issue_body}
 ## Follow-up Comments (IMPORTANT — these are the revision requests)
 
 ${comments}
+
+${base_integration}
 
 ## Instructions
 
@@ -2304,15 +2405,21 @@ This file will be used as the PR description. Be concise but thorough. Write fro
   fi
   # Auto-commit edits left by the shell-free implementer.
   prepare_pr_summary || { cleanup_issue "$issue_num" "$branch_name" "Invalid summary handoff"; return 1; }
-  local unstaged
+  local unstaged merge_pending=false
   unstaged=$(git status --porcelain 2>/dev/null | wc -l)
-  if [[ "$unstaged" -gt 0 ]]; then
+  git rev-parse -q --verify MERGE_HEAD >/dev/null && merge_pending=true
+  if [[ "$unstaged" -gt 0 || "$merge_pending" == true ]]; then
     log "Copilot left ${unstaged} uncommitted change(s) — auto-committing"
     git add -A || return 1
     git commit -m "fix: revise implementation for #${issue_num}
 
 Revision requested via issue comments.
 Auto-committed by Squad Worker ${WORKER_ID}." || return 1
+  fi
+
+  if ! finish_revision_base_integration; then
+    cleanup_issue "$issue_num" "$branch_name" "Revision did not integrate ${DEFAULT_BRANCH} ${TASK_BASE_SHA:0:12}; base conflicts remain for explicit recovery"
+    return 1
   fi
 
   local revision_head revision_commit_count
@@ -2323,7 +2430,7 @@ Auto-committed by Squad Worker ${WORKER_ID}." || return 1
     return 1
   fi
 
-  revision_commit_count=$(git rev-list --count "${revision_start_head}..${revision_head}")
+  revision_commit_count=$(git rev-list --count --first-parent "${revision_start_head}..${revision_head}")
   log "Revision produced ${revision_commit_count} new commit(s) for issue #${issue_num}"
   if ! prepare_pr_summary; then
     cleanup_issue "$issue_num" "$branch_name" "Could not process revision summary metadata safely"
