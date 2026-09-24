@@ -2663,7 +2663,12 @@ read_pr_snapshot() {
     (.workflow_runs|type)=="array" and (.workflow_runs|length)==.total_count' <<<"$runs" >/dev/null || return 1
   runs=$(jq -c --arg head "$head" --arg branch "$branch" '[.workflow_runs[] |
     select(.head_sha == $head and .head_branch == $branch and .event == "pull_request")] |
-    group_by(.workflow_id) | map(max_by([.run_number,.run_attempt,.id]))' <<<"$runs") || return 1
+    group_by(.workflow_id) |
+    # A run cancelled by workflow concurrency (e.g. synchronize + edited firing
+    # together) is superseded when another run of the same workflow exists for
+    # this exact head. Only an all-cancelled workflow keeps its cancellation.
+    map((map(select(.conclusion != "cancelled"))) as $live |
+      (if ($live|length) > 0 then $live else . end) | max_by([.run_number,.run_attempt,.id]))' <<<"$runs") || return 1
   if ! jq -e --argjson required "$(jq -c .requiredWorkflows <<<"$policy")" '
     . as $runs | ($required|length)>0 and all($required[]; . as $name | any($runs[]; .name == $name))
   ' <<<"$runs" >/dev/null; then

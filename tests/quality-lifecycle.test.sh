@@ -366,6 +366,9 @@ gh() {
       {"id":3,"workflow_id":2,"run_number":1,"run_attempt":1,"name":"Governance","head_sha":"head-a","head_branch":"feature","event":"pull_request","status":"completed","conclusion":"success"},
       {"id":4,"workflow_id":3,"run_number":1,"run_attempt":1,"name":"Other head","head_sha":"head-b","head_branch":"feature","event":"pull_request","status":"completed","conclusion":"failure"}]}'
     [[ "$ACTIONS_MODE" != missing ]] || data=$(jq '.workflow_runs |= map(select(.id != 3)) | .total_count=(.workflow_runs|length)' <<<"$data")
+    # Concurrency-cancelled newer run beside a successful run of the same workflow/head.
+    [[ "$ACTIONS_MODE" != superseded ]] || data=$(jq '.workflow_runs += [{"id":5,"workflow_id":2,"run_number":2,"run_attempt":1,"name":"Governance","head_sha":"head-a","head_branch":"feature","event":"pull_request","status":"completed","conclusion":"cancelled"}] | .total_count=(.workflow_runs|length)' <<<"$data")
+    [[ "$ACTIONS_MODE" != allcancelled ]] || data=$(jq '.workflow_runs |= map(if .id == 3 then .conclusion="cancelled" else . end)' <<<"$data")
     jq '(.workflow_runs[] | select(.head_sha=="head-a") | .head_sha)="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"' <<<"$data"; return 0
   fi
   if [[ "$*" == *'/jobs?'* ]]; then
@@ -381,6 +384,16 @@ gh() {
 snapshot=$(read_pr_snapshot feature)
 remote_checks_ready "$snapshot"
 if grep -qE '/runs/(1|4)/' "$JOBS_REQUESTED"; then fail 'wrong head/old attempt jobs queried'; fi
+ACTIONS_MODE=superseded
+: >"$JOBS_REQUESTED"
+snapshot=$(read_pr_snapshot feature)
+remote_checks_ready "$snapshot" || fail 'concurrency-cancelled duplicate run blocked a green head'
+if grep -q '/runs/5/' "$JOBS_REQUESTED"; then fail 'superseded cancelled run was evaluated'; fi
+ACTIONS_MODE=allcancelled
+snapshot=$(read_pr_snapshot feature)
+reject remote_checks_ready "$snapshot"
+jq -e 'any(.statusCheckRollup[]; .name=="workflow:Governance" and .conclusion=="CANCELLED")' <<<"$snapshot" >/dev/null || fail 'sole cancelled run hidden'
+ok 'cancelled run superseded only by another run of the same workflow and head'
 ACTIONS_MODE=missing
 snapshot=$(read_pr_snapshot feature)
 reject remote_checks_ready "$snapshot"
