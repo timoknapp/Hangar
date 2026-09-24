@@ -761,7 +761,7 @@ assert_not_contains "$publish_source" '--add-label squad:done' "publication is n
 pass "new and revision flows share fail-closed draft-first publisher"
 
 # shellcheck disable=SC2016 # Assertions intentionally match literal shell source.
-assert_contains "$revision_source" 'revision_start_head=$(git rev-parse HEAD)' "revision captures starting HEAD"
+assert_contains "$revision_source" 'revision_start_head="$TASK_START_HEAD"' "revision captures published starting HEAD"
 # shellcheck disable=SC2016 # Assertions intentionally match literal shell source.
 assert_contains "$revision_source" '"$revision_head" == "$revision_start_head"' "revision rejects unchanged HEAD"
 # shellcheck disable=SC2016 # Assertions intentionally match literal shell source.
