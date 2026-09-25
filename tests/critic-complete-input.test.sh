@@ -21,11 +21,16 @@ def emit(t,**data):
     if mode=='subagent-verdict' and t=='assistant.message':
         event['agentId']='subagent-instance-1'
     events.append(event)
+def cli_mask(text):
+    import re
+    text=re.sub(r"\b[Bb]earer[ \t]+[^\s'\";]+",'******',text)
+    return re.sub(r'gh[pousr]_[A-Za-z0-9]{20,}','******',text)
 def read(start,end,tool='view',content=None,**extra):
     call=f'call-{len(events)}'
     emit('tool.execution_start',toolCallId=call,toolName=tool,model=model,
          arguments={'path':str(p) if mode!='wrong-path' else str(p)+'.other','view_range':[start,end]},**extra)
     text='\n'.join(f'{i+1}. {lines[i]}' for i in range(start-1,end))
+    if mode=='cli-mask' and content is None: content=cli_mask(text)
     emit('tool.execution_complete',toolCallId=call,model=model,interactionId=interaction,
          success=mode!='denied',result={'content':text if content is None else content,
                                      'detailedContent':text},**extra)
@@ -202,6 +207,63 @@ grep -Fq '(1322/1422 lines); missing ranges (first 12): 801-900; content mismatc
 if grep -Eq 'Bearer|prefix|Documentation|\*{6}' "$TMP/redaction-proof.log"; then fail 'diagnostic leaked source/result content'; fi
 validate_critic_delivery "$TMP/reworded.md" "$TMP/reworded.jsonl" fixture-model >/dev/null || fail 'unmodified reworded content rejected'
 echo 'PASS: redacted line 898 rejects entire 801-900 block; diagnostics expose only locations; exact reworded control passes'
+# The real CLI masks "Bearer <value>" in tool results (comool #407: an e2e test
+# asserting 'Bearer synthetic-admin'). Worker escaping keeps delivery exact.
+git checkout -q feature
+printf "expect(headers.authorization).toBe('Bearer synthetic-admin');\n" > auth-header.spec.ts
+git add auth-header.spec.ts && git commit -qm 'auth header fixture'
+run_agent_copilot() {
+  local input
+  input=$(find "$WORKSPACE_DIR" -maxdepth 1 -name '.critic-input.*.md')
+  cp "$input" "$TMP/input.md"
+  bash "$ROOT/tests/critic-complete-input.test.sh" --emit "$input"
+}
+CRITIC_TEST_MODE=cli-mask LOOP_COPILOT_SECRET_FILTER_MODULE=off
+run_critic || fail "CLI-masked Bearer fixture not delivered: $CRITIC_FEEDBACK"
+grep -Fq "toBe('⟦Bearer⟧ synthetic-admin')" "$TMP/input.md" || fail 'Bearer not escaped in review input'
+if grep -Eq "toBe\('Bearer synthetic" "$TMP/input.md"; then fail 'raw maskable text in review input'; fi
+grep -Fq "toBe('Bearer synthetic-admin')" <(critic_unescape_masked < "$TMP/input.md") || fail 'escaping not reversible'
+original_diff=$(git diff --no-ext-diff --no-textconv --full-index "$(trusted_base_ref)...HEAD")
+[[ "$original_diff" == *"'Bearer synthetic-admin'"* &&
+   "$REVIEW_DIFF_HASH" == "$(printf '%s' "$original_diff" | sha256sum | cut -d' ' -f1)" ]] ||
+  fail 'review binding no longer on original diff'
+(
+  critic_escape_masked() { cat; }
+  if run_critic; then fail 'unescaped CLI-masked input proven complete'; fi
+  [[ "$CRITIC_FAILURE_KIND" == incomplete && "$CRITIC_FEEDBACK" == *'content mismatch lines'* ]] || fail 'control did not reproduce #407'
+)
+echo 'PASS: CLI-masked Bearer line is escaped, delivered exactly and bound to the original diff (control reproduces #407)'
+# Pre-existing marker characters would make the mapping ambiguous: no model call.
+(
+  run_agent_copilot() { fail 'ambiguous marker input called model'; }
+  FINAL_PR_BODY='Uses ⟦ brackets in prose.'
+  if run_critic; then fail 'ambiguous marker input accepted'; fi
+  [[ "$CRITIC_FAILURE_KIND" == incomplete && "$CRITIC_FEEDBACK" == *'masking markers'* ]] || fail 'marker ambiguity classification'
+  [[ -z "$(find "$WORKSPACE_DIR" -maxdepth 1 -name '.critic-input.*.md')" ]] || fail 'input not cleaned'
+)
+echo 'PASS: input already containing masking markers fails closed before the model'
+# Native-filter preflight: real-looking credentials stay a location-only refusal.
+cat > "$TMP/fake-filter.js" <<'JS'
+module.exports = {
+  secretFilterCreate: () => 1,
+  secretFilterFilter: (h, s) => ({changed: /\b[Bb]earer[ \t]+[^\s'";]+|gh[pousr]_[A-Za-z0-9]{20,}/.test(s), value: s}),
+};
+JS
+LOOP_COPILOT_SECRET_FILTER_MODULE="$TMP/fake-filter.js"
+run_critic || fail "preflight rejected escaped input: $CRITIC_FEEDBACK"
+(
+  run_agent_copilot() { fail 'masked credential called model'; }
+  FINAL_PR_BODY="Example token ghp_$(printf 'A%.0s' {1..24}) must not be used."
+  if run_critic >"$TMP/preflight.log" 2>&1; then fail 'maskable credential reached model'; fi
+  [[ "$CRITIC_FAILURE_KIND" == incomplete && "$CRITIC_FEEDBACK" == *'masks (lines: '* ]] || fail 'preflight classification'
+  if grep -q 'ghp_' "$TMP/preflight.log" <<<"$CRITIC_FEEDBACK"; then fail 'preflight leaked credential text'; fi
+  [[ "$CRITIC_FEEDBACK" != *ghp_* ]] || fail 'preflight feedback leaked credential text'
+  [[ -z "$(find "$WORKSPACE_DIR" -maxdepth 1 -name '.critic-input.*.md')" ]] || fail 'input not cleaned'
+)
+LOOP_COPILOT_SECRET_FILTER_MODULE="$TMP/missing-filter.node"
+run_critic || fail 'missing filter module blocked review'
+LOOP_COPILOT_SECRET_FILTER_MODULE=off CRITIC_TEST_MODE=full
+echo 'PASS: native-filter preflight passes escaped input, refuses residual masked text by line number only, tolerates missing module'
 LOOP_MAX_REVIEW_BYTES=32
 run_agent_copilot() { fail 'oversize called model'; }
 if run_critic; then fail 'oversize accepted'; fi
