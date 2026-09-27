@@ -818,9 +818,29 @@ fetch_task_base() {
   printf '%s\n' "$fetched"
 }
 
+# Directories the coding user created before agent-launch applied the shared
+# umask (0022 via sudo) are not group-writable, so the publisher cannot add Git
+# objects there. Restore only group rwx, as the unprivileged owner: never as
+# root, never touching other/world bits or files. Idempotent and bounded.
+repair_shared_workspace_modes() {
+  local remaining listed count
+  remaining=$(task_seconds_remaining) || return 1
+  listed=$(sudo -n -u "$AGENT_USER" /usr/bin/env -i \
+    HOME="$AGENT_HOME" PATH="$AGENT_PATH" \
+    /usr/bin/timeout --kill-after=10 "$remaining" /usr/bin/find "$WORKSPACE_DIR" -xdev -type d \
+      ! -perm -g=rwx -print -exec /usr/bin/chmod g+rwx {} +) || {
+    log_error "Could not restore group access in the shared workspace"
+    return 1
+  }
+  count=$(printf '%s' "$listed" | grep -c '' || true)
+  (( count == 0 )) || log "Restored group access on ${count} shared workspace director$( ((count == 1)) && echo y || echo ies)"
+  return 0
+}
+
 prepare_task_base() {
   local branch="$1" revision="${2:-false}" base remote_head local_head
   workspace_clean || { log_error "Workspace is dirty; preserve/recover it explicitly before retry"; return 1; }
+  repair_shared_workspace_modes || return 1
   base=$(fetch_task_base) || return 1
   TASK_BASE_SHA="$base"
   if [[ "$revision" == true ]]; then
