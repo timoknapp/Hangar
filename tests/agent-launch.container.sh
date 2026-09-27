@@ -23,6 +23,10 @@ test "$(awk '$1=="NoNewPrivs:" {print $2}' /proc/self/status)" = 1
 test "$(id -G | wc -w)" = 1
 test "$HOME" = /home/squad-agent
 test "$COPILOT_TASK_WAIT_TIMEOUT_SECONDS" = 86400
+# Shared checkout: sudo resets to 0022; agent-launch must restore group write.
+test "$(umask)" = 0002
+mkdir /workspace/probe/agent-dir
+test "$(stat -c %a /workspace/probe/agent-dir)" = 2775
 if env | cut -d= -f1 | grep -Eq '^(GH_TOKEN|GITHUB_TOKEN|COPILOT_PAT|PUBLISHER_MARKER)$'; then exit 1; fi
 ! cat /home/copilot/publisher-fixture 2>/dev/null
 ! sudo -n /usr/local/bin/agent-launch command true 2>/dev/null
@@ -41,6 +45,8 @@ source /home/copilot/worker-loop.sh
 cd "$WORKSPACE_DIR"
 agent_startup_canary
 run_agent_command 'bash /workspace/probe/check-boundary.sh'
+# The publisher can write into the directory the coding user just created.
+touch /workspace/probe/agent-dir/publisher-write
 rc=0
 run_agent_command 'exit 9' || rc=$?
 test "$rc" = 9

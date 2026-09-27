@@ -37,6 +37,27 @@ prepare_task_base feature
 BASE="$TASK_BASE_SHA"
 [[ "$(git rev-parse HEAD)" == "$BASE" ]] || fail "fresh exact HEAD"
 ok 'fresh preparation uses immutable fetched base'
+# #409: coding-user directories created with umask 0022 blocked publisher fetches.
+mkdir -p .git/objects/zz "$WORKSPACE_DIR/build-output/nested"
+chmod 2755 .git/objects/zz "$WORKSPACE_DIR/build-output/nested"; chmod 0700 "$WORKSPACE_DIR/build-output"
+printf 'x\n' > .git/objects/zz/keep; chmod 0444 .git/objects/zz/keep
+printf 'build-output/\n' >> .git/info/exclude
+begin_task
+prepare_task_base feature
+for d in .git/objects/zz build-output build-output/nested; do
+  [[ "$(( 0$(stat -c %a "$d") & 070 ))" == 56 ]] || fail "group access not restored on $d"
+done
+[[ "$(stat -c %a .git/objects/zz)" == 2775 && "$(stat -c %a build-output)" == 770 ]] || fail 'other/setgid bits changed'
+[[ "$(stat -c %a .git/objects/zz/keep)" == 444 ]] || fail 'file modes changed'
+rm -rf .git/objects/zz build-output; sed -i '/^build-output\/$/d' .git/info/exclude
+REPAIR_CALLS="$TMP/repair-calls"
+sudo() { echo "$*" >>"$REPAIR_CALLS"; return 7; }
+reject prepare_task_base feature
+[[ "$(git rev-parse HEAD)" == "$BASE" ]] || fail 'failed repair changed head'
+grep -q -- "-n -u $AGENT_USER /usr/bin/env -i HOME=$AGENT_HOME" "$REPAIR_CALLS" || fail 'repair not run as coding user'
+unset -f sudo
+source "$ROOT/tests/fixtures/evidence-user-switch.sh"
+ok 'base preparation restores group access as coding user; repair failure blocks before fetch'
 printf 'unrelated\n' > keep.txt
 before=$(git rev-parse HEAD)
 reject prepare_task_base another

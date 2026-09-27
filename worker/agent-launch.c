@@ -10,6 +10,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/prctl.h>
+#include <sys/stat.h>
 #include <sys/syscall.h>
 #include <unistd.h>
 
@@ -64,6 +65,12 @@ int main(int argc, char **argv) {
     if (chdir(cwd)) die("unprivileged working directory");
     free(cwd);
     if (prctl(PR_SET_DUMPABLE, 0, 0, 0, 0)) die("dumpability");
+    /* The checkout is shared with the publisher through the squad group. sudo
+     * resets the caller's cooperative umask to 0022, so objects/directories the
+     * coding user created were not group-writable and later publisher fetches
+     * failed ("insufficient permission ... .git/objects"). Other: no access
+     * change beyond the existing group model. */
+    umask(0002);
     const char *env[][2] = {
         {"HOME", "/home/squad-agent"}, {"USER", "squad-agent"}, {"LOGNAME", "squad-agent"},
         {"PATH", "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"},
