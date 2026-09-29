@@ -818,22 +818,37 @@ fetch_task_base() {
   printf '%s\n' "$fetched"
 }
 
-# Directories the coding user created before agent-launch applied the shared
-# umask (0022 via sudo) are not group-writable, so the publisher cannot add Git
-# objects there. Restore only group rwx, as the unprivileged owner: never as
-# root, never touching other/world bits or files. Idempotent and bounded.
+# Directories created with umask 0022 are not group-writable, so the other
+# party cannot add Git objects there: coding-user dirs from before agent-launch
+# applied the shared umask, publisher dirs from operator `docker exec` (which
+# does not inherit the loop's umask 0002). Each owner restores only group rwx
+# on directories it owns (never root, never files or other/world bits). The
+# final publisher scan is authoritative: any directory still lacking group rwx
+# (foreign owner, failed pass) blocks before the fetch.
 repair_shared_workspace_modes() {
-  local remaining listed count
+  local remaining before after count
   remaining=$(task_seconds_remaining) || return 1
-  listed=$(sudo -n -u "$AGENT_USER" /usr/bin/env -i \
-    HOME="$AGENT_HOME" PATH="$AGENT_PATH" \
-    /usr/bin/timeout --kill-after=10 "$remaining" /usr/bin/find "$WORKSPACE_DIR" -xdev -type d \
-      ! -perm -g=rwx -print -exec /usr/bin/chmod g+rwx {} +) || {
-    log_error "Could not restore group access in the shared workspace"
+  before=$(/usr/bin/find "$WORKSPACE_DIR" -xdev -type d ! -perm -g=rwx -printf x) || {
+    log_error "Shared workspace is not fully readable by the publisher; operator repair required"
     return 1
   }
-  count=$(printf '%s' "$listed" | grep -c '' || true)
-  (( count == 0 )) || log "Restored group access on ${count} shared workspace director$( ((count == 1)) && echo y || echo ies)"
+  [[ -n "$before" ]] || return 0
+  # chmod on directories owned by the other party fails by design; the final
+  # scan, not these exit codes, decides.
+  sudo -n -u "$AGENT_USER" /usr/bin/env -i \
+    HOME="$AGENT_HOME" PATH="$AGENT_PATH" \
+    /usr/bin/timeout --kill-after=10 "$remaining" /usr/bin/find "$WORKSPACE_DIR" -xdev -type d \
+      ! -perm -g=rwx -exec /usr/bin/chmod g+rwx {} + >/dev/null 2>&1 || true
+  remaining=$(task_seconds_remaining) || return 1
+  /usr/bin/timeout --kill-after=10 "$remaining" /usr/bin/find "$WORKSPACE_DIR" -xdev -type d \
+    -user "$(id -u)" ! -perm -g=rwx -exec /usr/bin/chmod g+rwx {} + >/dev/null 2>&1 || true
+  after=$(/usr/bin/find "$WORKSPACE_DIR" -xdev -type d ! -perm -g=rwx -printf '%u\n') || after="unreadable"
+  if [[ -n "$after" ]]; then
+    log_error "Shared workspace directories without group access remain (owners: $(sort <<<"$after" | uniq -c | head -5 | tr -s ' \n' ' ')); operator repair required"
+    return 1
+  fi
+  count=${#before}
+  log "Restored group access on ${count} shared workspace director$( ((count == 1)) && echo y || echo ies)"
   return 0
 }
 
