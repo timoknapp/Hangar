@@ -272,7 +272,12 @@ pass "terminal autonomous issues do not consume open-issue capacity"
 
 GH_TEST_MODE=lifecycle
 : > "$GH_CALLS_FILE"
+PR_EXECUTIVE_SUMMARY=$'## Problem\nBlocked: prerequisite missing. Fixes #7 token ghp_abcdefghijklmnop'
 finalize_no_commit_issue 43 true 0
+PR_EXECUTIVE_SUMMARY=""
+assert_contains "$(cat "$GH_CALLS_FILE")" "Blocked: prerequisite missing" "no-change rationale published"
+assert_contains "$(cat "$GH_CALLS_FILE")" "Fixes issue #7" "rationale cannot close other issues"
+assert_not_contains "$(cat "$GH_CALLS_FILE")" "ghp_abcdefghijklmnop" "rationale redacted"
 assert_not_contains "$(cat "$GH_CALLS_FILE")" "issue close" "no-op does not infer acceptance"
 assert_contains "$(cat "$GH_CALLS_FILE")" "--add-label squad:failed" "no-op visibly blocked"
 assert_not_contains "$(cat "$GH_CALLS_FILE")" "--add-label squad:done" "failure is not done"

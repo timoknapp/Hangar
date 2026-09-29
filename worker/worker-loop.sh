@@ -1015,13 +1015,10 @@ fresh_base_unchanged() {
   [[ "$fresh" == "$TASK_BASE_SHA" ]] && task_integrity
 }
 
-# Capture only redacted bounded diagnostics outside the agent-readable checkout.
-retain_gate_log() {
-  local input="$1" phase="$2" output
-  init_loop_state || return 1
-  output="${LOOP_STATE_DIR}/${CURRENT_ISSUE:-startup}-${phase}-$(date +%s)-${RANDOM}.log"
-  # Values are read from the publisher process environment, never command argv.
-  node - "$input" "$output" <<'NODE'
+# Redact credentials from INPUT into OUTPUT (mode 0600), keeping the last
+# MAX bytes. Values are read from the publisher environment, never argv.
+redact_text_file() {
+  node - "$1" "$2" "${3:-65536}" <<'NODE'
 const fs = require('fs');
 let text = fs.readFileSync(process.argv[2], 'utf8');
 for (const key of ['GH_TOKEN','GITHUB_TOKEN','COPILOT_PAT','COPILOT_GITHUB_TOKEN']) {
@@ -1030,8 +1027,16 @@ for (const key of ['GH_TOKEN','GITHUB_TOKEN','COPILOT_PAT','COPILOT_GITHUB_TOKEN
 }
 text = text.replace(/(?:gh[pousr]_[A-Za-z0-9_]+|github_pat_[A-Za-z0-9_]+)/g, '[REDACTED]')
   .replace(/(authorization["': =]+)([^\r\n]+)/gi, '$1[REDACTED]');
-fs.writeFileSync(process.argv[3], text.slice(-65536), {mode: 0o600});
+fs.writeFileSync(process.argv[3], text.slice(-Number(process.argv[4])), {mode: 0o600});
 NODE
+}
+
+# Capture only redacted bounded diagnostics outside the agent-readable checkout.
+retain_gate_log() {
+  local input="$1" phase="$2" output
+  init_loop_state || return 1
+  output="${LOOP_STATE_DIR}/${CURRENT_ISSUE:-startup}-${phase}-$(date +%s)-${RANDOM}.log"
+  redact_text_file "$input" "$output" || return 1
   VERIFY_LOG_TAIL=$(tail -60 "$output")
   log "Redacted ${phase} evidence: ${output}"
 }
@@ -1561,7 +1566,26 @@ issue_uses_unattended_budget() {
 # autonomous queue indefinitely. Other zero-commit outcomes remain visible for
 # operator review, but squad:done keeps them out of worker selection.
 finalize_no_commit_issue() {
+  post_no_change_rationale "$1"
   cleanup_issue "$1" "${TASK_BRANCH:-unknown}" "No changes produced; operator assessment required"
+}
+
+# A deliberate stop (e.g. a missing prerequisite) is only actionable when the
+# maintainer sees why. Publish the implementer's own handoff, redacted and
+# bounded, with the same trust level as a PR description. Best effort.
+post_no_change_rationale() {
+  local issue_num="$1" raw redacted
+  [[ -n "$PR_EXECUTIVE_SUMMARY" ]] || return 0
+  raw=$(secure_temp_file no-change-raw) || return 0
+  redacted=$(secure_temp_file no-change-redacted) || { rm -f "$raw"; return 0; }
+  if ! printf '%s\n' "$PR_EXECUTIVE_SUMMARY" | neutralize_closing_references >"$raw" ||
+     ! redact_text_file "$raw" "$redacted" 6000 ||
+     ! gh issue comment "$issue_num" --repo "$REPO_SLUG" --body "ℹ️ Worker ${WORKER_ID}: the implementer stopped without changes. Its handoff (agent-written, not independently verified):
+
+$(cat "$redacted")" >/dev/null 2>&1; then
+    log_error "Could not publish no-change rationale for #${issue_num}"
+  fi
+  rm -f "$raw" "$redacted"
 }
 
 # Long implementation and review sessions can outlive a maintainer's approval.
