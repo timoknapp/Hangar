@@ -983,8 +983,15 @@ revision_base_prompt() {
 archive_unpublished_task_branch() {
   local branch="$1" archive
   [[ -z "$(git branch --show-current)" ]] || return 1
-  archive="squad-archive/${branch}-$(date -u +%Y%m%dT%H%M%SZ)"
-  git show-ref --verify --quiet "refs/heads/${archive}" && return 1
+  local stamp n=1
+  stamp="squad-archive/${branch}-$(date -u +%Y%m%dT%H%M%SZ)"
+  archive="$stamp"
+  # Two archives of one branch within the same second must not collide; never
+  # overwrite an existing archive ref.
+  while git show-ref --verify --quiet "refs/heads/${archive}"; do
+    (( n < 100 )) || return 1
+    n=$((n + 1)); archive="${stamp}-${n}"
+  done
   git branch -m "$branch" "$archive" || return 1
   log "Archived retained unpublished branch ${branch} as ${archive}"
 }

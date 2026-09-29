@@ -74,6 +74,19 @@ rm -rf .git/objects/xx
 unset -f sudo fixture_sudo
 source "$ROOT/tests/fixtures/evidence-user-switch.sh"
 ok 'base preparation restores group access per owner (coding user, publisher); residual dirs block before fetch'
+# Two archives of the same branch within one second get distinct names.
+git checkout -q --detach "$BASE"
+git branch -f same-second "$BASE"
+date() { if [[ "$*" == *'%Y%m%dT%H%M%SZ'* ]]; then echo 20260101T000000Z; else command date "$@"; fi; }
+archive_unpublished_task_branch same-second || fail 'first archive failed'
+git branch -f same-second "$BASE"
+archive_unpublished_task_branch same-second || fail 'same-second archive collided'
+unset -f date
+for ref in same-second-20260101T000000Z same-second-20260101T000000Z-2; do
+  git show-ref --verify --quiet "refs/heads/squad-archive/${ref}" || fail "archive ref ${ref} missing"
+done
+git checkout -q feature
+ok 'same-second branch archives never collide or overwrite'
 printf 'unrelated\n' > keep.txt
 before=$(git rev-parse HEAD)
 reject prepare_task_base another
