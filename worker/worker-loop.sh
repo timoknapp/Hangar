@@ -1578,11 +1578,13 @@ post_no_change_rationale() {
   [[ -n "$PR_EXECUTIVE_SUMMARY" ]] || return 0
   raw=$(secure_temp_file no-change-raw) || return 0
   redacted=$(secure_temp_file no-change-redacted) || { rm -f "$raw"; return 0; }
-  printf '%s\n' "$PR_EXECUTIVE_SUMMARY" | neutralize_closing_references >"$raw" &&
-    redact_text_file "$raw" "$redacted" 6000 &&
-    gh issue comment "$issue_num" --repo "$REPO_SLUG" --body "ℹ️ Worker ${WORKER_ID}: the implementer stopped without changes. Its handoff (agent-written, not independently verified):
+  if ! printf '%s\n' "$PR_EXECUTIVE_SUMMARY" | neutralize_closing_references >"$raw" ||
+     ! redact_text_file "$raw" "$redacted" 6000 ||
+     ! gh issue comment "$issue_num" --repo "$REPO_SLUG" --body "ℹ️ Worker ${WORKER_ID}: the implementer stopped without changes. Its handoff (agent-written, not independently verified):
 
-$(cat "$redacted")" >/dev/null 2>&1 || log_error "Could not publish no-change rationale for #${issue_num}"
+$(cat "$redacted")" >/dev/null 2>&1; then
+    log_error "Could not publish no-change rationale for #${issue_num}"
+  fi
   rm -f "$raw" "$redacted"
 }
 
