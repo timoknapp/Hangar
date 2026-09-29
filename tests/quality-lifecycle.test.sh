@@ -50,14 +50,43 @@ done
 [[ "$(stat -c %a .git/objects/zz)" == 2775 && "$(stat -c %a build-output)" == 770 ]] || fail 'other/setgid bits changed'
 [[ "$(stat -c %a .git/objects/zz/keep)" == 444 ]] || fail 'file modes changed'
 rm -rf .git/objects/zz build-output; sed -i '/^build-output\/$/d' .git/info/exclude
+# #410: a publisher-owned 2755 dir (operator docker exec, umask 0022) cannot be
+# changed by the coding user; the publisher repairs its own directories.
+mkdir -p .git/objects/yy; chmod 2755 .git/objects/yy
 REPAIR_CALLS="$TMP/repair-calls"
-sudo() { echo "$*" >>"$REPAIR_CALLS"; return 7; }
-reject prepare_task_base feature
-[[ "$(git rev-parse HEAD)" == "$BASE" ]] || fail 'failed repair changed head'
+# Evidence checks keep the fixture user switch; only the coding-user repair
+# pass fails (it cannot chmod a publisher-owned directory in production).
+eval "fixture_$(declare -f sudo)"
+sudo() { echo "$*" >>"$REPAIR_CALLS"; [[ "$*" != *" /usr/bin/find "* ]] || return 7; fixture_sudo "$@"; }
+begin_task
+prepare_task_base feature
+[[ "$(stat -c %a .git/objects/yy)" == 2775 ]] || fail 'publisher-owned dir not repaired by publisher'
 grep -q -- "-n -u $AGENT_USER /usr/bin/env -i HOME=$AGENT_HOME" "$REPAIR_CALLS" || fail 'repair not run as coding user'
-unset -f sudo
+rm -rf .git/objects/yy
+# A directory neither owner may change blocks before the fetch.
+mkdir -p .git/objects/xx; chmod 2755 .git/objects/xx
+id() { echo 99999; }
+before=$(git rev-parse HEAD)
+reject prepare_task_base feature
+unset -f id
+[[ "$(git rev-parse HEAD)" == "$before" && "$(stat -c %a .git/objects/xx)" == 2755 ]] || fail 'residual foreign dir changed head/mode'
+rm -rf .git/objects/xx
+unset -f sudo fixture_sudo
 source "$ROOT/tests/fixtures/evidence-user-switch.sh"
-ok 'base preparation restores group access as coding user; repair failure blocks before fetch'
+ok 'base preparation restores group access per owner (coding user, publisher); residual dirs block before fetch'
+# Two archives of the same branch within one second get distinct names.
+git checkout -q --detach "$BASE"
+git branch -f same-second "$BASE"
+date() { if [[ "$*" == *'%Y%m%dT%H%M%SZ'* ]]; then echo 20260101T000000Z; else command date "$@"; fi; }
+archive_unpublished_task_branch same-second || fail 'first archive failed'
+git branch -f same-second "$BASE"
+archive_unpublished_task_branch same-second || fail 'same-second archive collided'
+unset -f date
+for ref in same-second-20260101T000000Z same-second-20260101T000000Z-2; do
+  git show-ref --verify --quiet "refs/heads/squad-archive/${ref}" || fail "archive ref ${ref} missing"
+done
+git checkout -q feature
+ok 'same-second branch archives never collide or overwrite'
 printf 'unrelated\n' > keep.txt
 before=$(git rev-parse HEAD)
 reject prepare_task_base another
