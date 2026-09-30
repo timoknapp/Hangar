@@ -85,7 +85,7 @@ PY
   run_verify_gate
   run_critic
   [[ "$REVIEWED_HEAD" == "$VERIFIED_HEAD" && "$VERIFIED_HEAD" == "$(git rev-parse HEAD)" ]] || fail binding
-  fresh_base_unchanged
+  fresh_base_compatible
   # Exercise the real publish preconditions; stop at the authorization boundary
   # so this never mutates a remote API or fakes a publication verdict.
   (

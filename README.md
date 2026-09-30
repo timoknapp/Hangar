@@ -508,7 +508,7 @@ sequenceDiagram
 | `loop.requiredWorkflows` | `[]` | Exact universal workflow names required by the Actions backend |
 
 | `loop.maxActiveIssues` | `0` | `1` enables repository-wide WIP through close/merge; explicitly approved allowlisted manual intake is exempt |
-| `loop.maxTaskSeconds` | `3600` | Total implementation, corrections and pending-check deadline |
+| `loop.maxTaskSeconds` | `3600` | Total implementation, verification and correction deadline; pending checks keep at least `LOOP_CHECK_WAIT_SECONDS` (3600) |
 | `loop.maxReviewBytes` | `262144` | Maximum complete review input bytes; oversize blocks |
 | `loop.profileDir` | `""` | Root-owned read-only operator profile, never repository-selected |
 

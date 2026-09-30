@@ -564,8 +564,16 @@ A task explicitly requesting draft remains `waiting-human`, not failed; its WIP 
 A closed/merged pending PR releases only its owned coordination refs without attempting a draft mutation.
 
 `maxRetries` is one shared code-correction allowance, not a fresh allowance per nested gate.
-`maxTaskSeconds` defaults to 3600 and covers initial implementation, verification, review, corrections and pending remote checks.
-Set an explicit longer deadline for slow CI rather than relying on repeated outer attempts.
+`maxTaskSeconds` defaults to 3600 and covers initial implementation, verification, review and corrections.
+Pending remote checks keep at least `LOOP_CHECK_WAIT_SECONDS` (default 3600) after the draft is published; no model or repository code runs while waiting.
+
+The task base stays pinned to the commit fetched at admission; verification, review, issue evidence and the profile policy gate are bound to it.
+If the default branch moves during a task, Hangar logs it and continues as long as the pinned base is an ancestor of the fresh default branch and `git merge-tree --write-tree <fresh> HEAD` is conflict-free.
+Only a real conflict (reported with the conflicting paths) or rewritten history blocks.
+A pending draft tolerates a newer PR base SHA while it contains the pinned base; head and body stay exact.
+
+A failed required check or a PR conflict on the exact published head keeps the draft and requeues the existing revision flow (with failed-check logs and base integration) at most `LOOP_MAX_CI_ROUNDS` times per PR (default 2, `0` restores the terminal block).
+Rounds are counted from worker markers on the issue and the pending receipt; unreadable history blocks.
 Infrastructure failures and profile exit 78 (policy/evidence blocked) never request code corrections.
 Baseline failures block before implementation instead of inviting unrelated test repairs.
 
