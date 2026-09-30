@@ -95,6 +95,14 @@ REVISION_BASE_MODE=""
 REVISION_BASE_CONFLICTS=""
 REVISION_MERGE_COMMIT=""
 LOOP_MAX_BASE_CONFLICTS="${LOOP_MAX_BASE_CONFLICTS:-40}"
+# A red required check or a PR conflict on the exact published head requeues the
+# existing revision flow at most this many times per PR (0 = terminal as before).
+LOOP_MAX_CI_ROUNDS="${LOOP_MAX_CI_ROUNDS:-2}"
+# Minimum bounded wait for remote checks after the draft is published; long
+# implementations must not expire a draft whose checks simply run afterwards.
+LOOP_CHECK_WAIT_SECONDS="${LOOP_CHECK_WAIT_SECONDS:-3600}"
+TASK_CI_ROUNDS=0
+BASE_DRIFT_REASON=""
 TASK_DEADLINE=0
 CORRECTIONS_USED=0
 BASE_VERIFY_OK=false
@@ -783,7 +791,8 @@ init_loop_state() {
   select_check_policy '' '' </dev/null >/dev/null || return 1
   [[ "$LOOP_MAX_ACTIVE_ISSUES" =~ ^[01]$ && "$LOOP_MAX_TASK_SECONDS" =~ ^[1-9][0-9]*$ &&
      "$LOOP_MAX_REVIEW_BYTES" =~ ^[1-9][0-9]*$ && "$LOOP_MAX_RETRIES" =~ ^[0-9]+$ &&
-     "$LOOP_CRITIC_ATTEMPTS" =~ ^[1-3]$ ]]
+     "$LOOP_CRITIC_ATTEMPTS" =~ ^[1-3]$ && "$LOOP_MAX_CI_ROUNDS" =~ ^[0-9]$ &&
+     "$LOOP_CHECK_WAIT_SECONDS" =~ ^[1-9][0-9]*$ ]]
 }
 
 task_seconds_remaining() {
@@ -801,6 +810,7 @@ begin_task() {
   VERIFIED_HEAD="" REVIEWED_HEAD="" REVIEW_BODY_HASH="" FINAL_PR_BODY=""
   TASK_BASE_SHA="" TASK_BRANCH="" TASK_START_HEAD=""
   REVISION_BASE_MODE="" REVISION_BASE_CONFLICTS="" REVISION_MERGE_COMMIT=""
+  TASK_CI_ROUNDS=0 BASE_DRIFT_REASON=""
 }
 
 workspace_clean() {
@@ -1009,10 +1019,36 @@ task_integrity() {
   git merge-base --is-ancestor "$TASK_START_HEAD" HEAD
 }
 
-fresh_base_unchanged() {
-  local fresh
-  fresh=$(fetch_task_base) || return 1
-  [[ "$fresh" == "$TASK_BASE_SHA" ]] && task_integrity
+# TASK_BASE_SHA stays pinned: verification, review, issue evidence, the UI
+# manifest and the policy gate are all bound to it. A newer default branch does
+# not invalidate that evidence while it still contains the pinned base and merges
+# cleanly with HEAD; only a real conflict (or rewritten history) blocks.
+fresh_base_compatible() {
+  local fresh out rc=0 f listed
+  local -a rows=() files=()
+  BASE_DRIFT_REASON=""
+  fresh=$(fetch_task_base) || { BASE_DRIFT_REASON="could not refresh ${DEFAULT_BRANCH}"; return 1; }
+  task_integrity || { BASE_DRIFT_REASON="branch/HEAD ancestry drift"; return 1; }
+  [[ "$fresh" == "$TASK_BASE_SHA" ]] && return 0
+  if ! git merge-base --is-ancestor "$TASK_BASE_SHA" "$fresh"; then
+    BASE_DRIFT_REASON="${DEFAULT_BRANCH} ${fresh:0:12} no longer contains the pinned base ${TASK_BASE_SHA:0:12} (rewritten history)"
+    return 1
+  fi
+  out=$(secure_temp_file base-merge) || return 1
+  git merge-tree --write-tree -z --name-only --no-messages "$fresh" HEAD >"$out" || rc=$?
+  mapfile -d '' -t rows <"$out"; rm -f "$out"
+  case "$rc" in
+    0)
+      log "${DEFAULT_BRANCH} moved ${TASK_BASE_SHA:0:12} -> ${fresh:0:12} during the task; HEAD merges cleanly, pinned base kept"
+      return 0 ;;
+    1)
+      for f in "${rows[@]:1}"; do [[ -n "$f" ]] && files+=("${f//[[:cntrl:]]/?}"); done
+      listed=$(printf '%s, ' "${files[@]:0:20}"); listed="${listed%, }"
+      (( ${#files[@]} <= 20 )) || listed="${listed} (+$(( ${#files[@]} - 20 )) more)"
+      BASE_DRIFT_REASON="${DEFAULT_BRANCH} moved to ${fresh:0:12} and conflicts with HEAD in: ${listed:-unknown paths}"
+      return 1 ;;
+    *) BASE_DRIFT_REASON="merge check against ${DEFAULT_BRANCH} ${fresh:0:12} failed (merge-tree exit ${rc})"; return 1 ;;
+  esac
 }
 
 # Redact credentials from INPUT into OUTPUT (mode 0600), keeping the last
@@ -2179,11 +2215,6 @@ This file will be used as the PR description. Be concise but thorough. Write fro
     abort_issue_without_git "$issue_num" "Agent changed repository Git metadata into an unsafe state"
     return 1
   fi
-  if ! fresh_base_unchanged; then
-    cleanup_issue "$issue_num" "$branch_name" "Could not refresh the authoritative base after implementation"
-    return 1
-  fi
-
   if ! task_integrity; then
     cleanup_issue "$issue_num" "$branch_name" "Agent branch/HEAD ancestry drift; retained for explicit recovery"
     return 1
@@ -2221,6 +2252,11 @@ Auto-committed by Squad Worker ${WORKER_ID} (copilot left changes unstaged)." ||
     cleanup_issue "$issue_num" "$branch_name" "Could not process PR summary metadata safely"
     return 1
   fi
+  # Checked on the committed result, before costly gates.
+  if ! fresh_base_compatible; then
+    cleanup_issue "$issue_num" "$branch_name" "Base check after implementation: ${BASE_DRIFT_REASON}"
+    return 1
+  fi
 
   # Run quality gates (verify + independent critic) with bounded self-correction.
   # Disabled local gates allow draft only; failures block publication.
@@ -2242,8 +2278,8 @@ Auto-committed by Squad Worker ${WORKER_ID} (copilot left changes unstaged)." ||
     abort_issue_without_git "$issue_num" "Quality gates left repository Git metadata unsafe"
     return 1
   fi
-  if ! fresh_base_unchanged; then
-    cleanup_issue "$issue_num" "$branch_name" "Could not refresh the authoritative base before publication"
+  if ! fresh_base_compatible; then
+    cleanup_issue "$issue_num" "$branch_name" "Base check before publication: ${BASE_DRIFT_REASON}"
     return 1
   fi
   base_ref=$(trusted_base_ref)
@@ -2336,6 +2372,9 @@ process_revision() {
     cleanup_issue "$issue_num" "$branch_name" "Could not determine revision PR state safely"
     return 1
   fi
+  # Evidence only; the pending phase recounts authoritatively and fails closed.
+  if [[ -n "$existing_pr" ]]; then TASK_CI_ROUNDS=$(ci_rounds_used "$issue_num" "$existing_pr" 2>/dev/null) || TASK_CI_ROUNDS=0; fi
+  [[ "$TASK_CI_ROUNDS" =~ ^[0-9]+$ ]] || TASK_CI_ROUNDS=0
 
   # Detect issue type and load the matching prompt
   local prompt_file prompt_instructions=""
@@ -2463,11 +2502,6 @@ This file will be used as the PR description. Be concise but thorough. Write fro
     abort_issue_without_git "$issue_num" "Revision agent left repository Git metadata unsafe"
     return 1
   fi
-  if ! fresh_base_unchanged; then
-    cleanup_issue "$issue_num" "$branch_name" "Could not refresh the authoritative base after revision"
-    return 1
-  fi
-
   if ! task_integrity; then
     cleanup_issue "$issue_num" "$branch_name" "Agent branch/HEAD ancestry drift; retained for explicit recovery"
     return 1
@@ -2488,6 +2522,11 @@ Auto-committed by Squad Worker ${WORKER_ID}." || return 1
 
   if ! finish_revision_base_integration; then
     cleanup_issue "$issue_num" "$branch_name" "Revision did not integrate ${DEFAULT_BRANCH} ${TASK_BASE_SHA:0:12}; base conflicts remain for explicit recovery"
+    return 1
+  fi
+  # After an announced base conflict is resolved, so HEAD is comparable.
+  if ! fresh_base_compatible; then
+    cleanup_issue "$issue_num" "$branch_name" "Base check after revision: ${BASE_DRIFT_REASON}"
     return 1
   fi
 
@@ -2524,8 +2563,8 @@ Auto-committed by Squad Worker ${WORKER_ID}." || return 1
     abort_issue_without_git "$issue_num" "Revision quality gates left repository Git metadata unsafe"
     return 1
   fi
-  if ! fresh_base_unchanged; then
-    cleanup_issue "$issue_num" "$branch_name" "Could not refresh the authoritative base before revision publication"
+  if ! fresh_base_compatible; then
+    cleanup_issue "$issue_num" "$branch_name" "Base check before revision publication: ${BASE_DRIFT_REASON}"
     return 1
   fi
   local base_ref
@@ -2540,8 +2579,12 @@ Auto-committed by Squad Worker ${WORKER_ID}." || return 1
 save_pending_publication() {
   local issue="$1" branch="$2" url="$3"
   init_loop_state || return 1
-  local tmp check_policy
+  local tmp check_policy deadline
   check_policy=$(resolve_check_policy "$TASK_BASE_SHA" "$(git rev-parse HEAD)") || return 1
+  # Remote checks start only now; a long implementation must not leave them
+  # without a bounded wait. No model/repository code runs while pending.
+  deadline=$(( $(date +%s) + LOOP_CHECK_WAIT_SECONDS ))
+  (( TASK_DEADLINE > deadline )) && deadline="$TASK_DEADLINE"
   tmp=$(mktemp "${LOOP_STATE_DIR}/pending.XXXXXX") || return 1
   jq -n --arg issue "$issue" --arg branch "$branch" --arg url "$url" \
     --arg base "$TASK_BASE_SHA" --arg head "$(git rev-parse HEAD)" \
@@ -2552,10 +2595,11 @@ save_pending_publication() {
     --arg claimOid "$CURRENT_CLAIM_OID" --arg wip "$CURRENT_WIP_REF" \
     --argjson manualIntake "$CURRENT_MANUAL_INTAKE" \
     --argjson checkPolicy "$check_policy" \
-    --argjson deadline "$TASK_DEADLINE" --argjson keepDraft "$TASK_KEEP_DRAFT" \
+    --argjson deadline "$deadline" --argjson keepDraft "$TASK_KEEP_DRAFT" --argjson ciRounds "$TASK_CI_ROUNDS" \
     '{issue:$issue,branch:$branch,url:$url,base:$base,head:$head,verified:$verified,reviewed:$reviewed,
       inputHash:$inputHash,diffHash:$diffHash,body:$body,bodyHash:$bodyHash,contractHash:$contractHash,
-      claim:$claim,claimOid:$claimOid,wip:$wip,manualIntake:$manualIntake,deadline:$deadline,keepDraft:$keepDraft,checkPolicy:$checkPolicy}' >"$tmp" || return 1
+      claim:$claim,claimOid:$claimOid,wip:$wip,manualIntake:$manualIntake,deadline:$deadline,keepDraft:$keepDraft,
+      checkPolicy:$checkPolicy,ciRounds:$ciRounds}' >"$tmp" || return 1
   chmod 600 "$tmp" && mv "$tmp" "${LOOP_STATE_DIR}/pending.json"
 }
 
@@ -2564,7 +2608,9 @@ publish_task() {
   if ! sanitize_repository_git_config || ! workspace_clean; then
     cleanup_issue "$issue" "$branch" "Repository evidence drift before publication"; return 1
   fi
-  if ! task_integrity || ! fresh_base_unchanged; then cleanup_issue "$issue" "$branch" "Base/HEAD drift before publication"; return 1; fi
+  if ! task_integrity || ! fresh_base_compatible; then
+    cleanup_issue "$issue" "$branch" "Base/HEAD drift before publication: ${BASE_DRIFT_REASON:-branch/HEAD ancestry drift}"; return 1
+  fi
   publication_authorized "$issue" squad squad:processing || {
     cleanup_issue "$issue" "$branch" "$PUBLICATION_BLOCK_REASON"; return 1;
   }
@@ -2705,7 +2751,9 @@ read_pr_metadata() {
 }
 
 read_pr_snapshot() {
-  local branch="$1" metadata runs jobs all_jobs='[]' run id attempt status conclusion name policy base
+  # Optional pinned task base: the check policy stays bound to the evidence base
+  # even when GitHub reports a newer PR base after other merges.
+  local branch="$1" pinned="${2:-}" metadata runs jobs all_jobs='[]' run id attempt status conclusion name policy base
   metadata=$(read_pr_metadata "$branch") || return 1
   if [[ "$(jq -r .state <<<"$metadata")" == CLOSED || "$(jq -r .state <<<"$metadata")" == MERGED ]]; then
     printf '%s\n' "$metadata"; return 0
@@ -2715,7 +2763,7 @@ read_pr_snapshot() {
     rollup=$(gh pr view "$branch" --repo "$REPO_SLUG" --json headRefOid,statusCheckRollup) || return 1
     [[ "$(jq -er .headRefOid <<<"$rollup")" == "$(jq -er .headRefOid <<<"$metadata")" ]] || return 1
     metadata=$(jq --argjson rollup "$rollup" '. + {statusCheckRollup:$rollup.statusCheckRollup}' <<<"$metadata") || return 1
-    policy=$(resolve_check_policy "$(jq -er .baseRefOid <<<"$metadata")" "$(jq -er .headRefOid <<<"$metadata")") || return 1
+    policy=$(resolve_check_policy "${pinned:-$(jq -er .baseRefOid <<<"$metadata")}" "$(jq -er .headRefOid <<<"$metadata")") || return 1
     # Workflow names are not synthesized by the GraphQL backend.
     jq --argjson policy "$policy" '. + {checkPolicy:($policy + {requiredWorkflows:[]})}' <<<"$metadata"
     return $?
@@ -2725,7 +2773,7 @@ read_pr_snapshot() {
   local head
   head=$(jq -er .headRefOid <<<"$metadata") || return 1
   base=$(jq -er .baseRefOid <<<"$metadata") || return 1
-  policy=$(resolve_check_policy "$base" "$head") || return 1
+  policy=$(resolve_check_policy "${pinned:-$base}" "$head") || return 1
   runs=$(gh api --method GET "repos/${REPO_SLUG}/actions/runs" -f head_sha="$head" -f branch="$branch" \
     -f event=pull_request -F per_page=100) || return 1
   jq -e '(.total_count|type)=="number" and .total_count>=0 and .total_count<=100 and
@@ -2770,6 +2818,67 @@ archive_pending() {
   mv "${LOOP_STATE_DIR}/pending.json" "${LOOP_STATE_DIR}/${status}-${issue}.json"
 }
 
+# GitHub moves a PR's base SHA whenever the default branch advances. That keeps
+# the bound evidence valid as long as the pinned base is still contained.
+pinned_base_contained() {
+  local pinned="$1" current="$2" status
+  [[ "$pinned" =~ ^[0-9a-f]{40}$ && "$current" =~ ^[0-9a-f]{40}$ ]] || return 1
+  [[ "$pinned" == "$current" ]] && return 0
+  status=$(gh api "repos/${REPO_SLUG}/compare/${pinned}...${current}" --jq .status) || return 1
+  [[ "$status" == ahead || "$status" == identical ]]
+}
+
+# CI rounds are counted from worker markers on the issue, because the follow-up
+# revision may run on another worker. Unique heads per PR; forged extra markers
+# can only exhaust the budget earlier, never extend it.
+ci_rounds_used() {
+  local issue="$1" url="$2"
+  gh api --paginate "repos/${REPO_SLUG}/issues/${issue}/comments?per_page=100" | jq -s --arg pr "$url" '
+    [add // [] | .[] | (.body // "") | scan("<!-- hangar-ci-round pr=(\\S+) head=([0-9a-f]{40}) -->") |
+      select(.[0] == $pr) | .[1]] | unique | length'
+}
+
+# A red required check or a merge conflict on the exact published head reuses
+# the normal revision flow (claim, budget, gates, draft-first publication) with
+# the failed logs, at most LOOP_MAX_CI_ROUNDS times per PR. Returns 0 when
+# requeued, 1 when the caller must block with CI_REQUEUE_NOTE.
+requeue_ci_revision() {
+  local pending="$1" issue="$2" branch="$3" url="$4" head="$5" cause="$6" used receipt_rounds tmp
+  CI_REQUEUE_NOTE=""
+  (( LOOP_MAX_CI_ROUNDS > 0 )) || { CI_REQUEUE_NOTE="automatic CI revisions disabled"; return 1; }
+  if ! used=$(ci_rounds_used "$issue" "$url") || [[ ! "$used" =~ ^[0-9]+$ ]]; then
+    CI_REQUEUE_NOTE="CI round history unavailable; explicit revision required"; return 1
+  fi
+  receipt_rounds=$(jq -r '.ciRounds // 0' <<<"$pending")
+  [[ "$receipt_rounds" =~ ^[0-9]+$ ]] || receipt_rounds="$LOOP_MAX_CI_ROUNDS"
+  (( receipt_rounds > used )) && used="$receipt_rounds"
+  if (( used >= LOOP_MAX_CI_ROUNDS )); then
+    CI_REQUEUE_NOTE="automatic CI revision budget exhausted (${used}/${LOOP_MAX_CI_ROUNDS}); explicit revision required"
+    return 1
+  fi
+  ensure_pr_is_draft "$branch" || { CI_REQUEUE_NOTE="cannot enforce draft before CI revision"; return 1; }
+  gh issue comment "$issue" --repo "$REPO_SLUG" --body "🔁 Squad Worker ${WORKER_ID}: ${cause} on the published head ${head:0:12} (automatic CI revision $((used + 1))/${LOOP_MAX_CI_ROUNDS}). Fix the cause shown under \"Failed GitHub Checks\" and the base integration notes; do not weaken, skip or delete tests or checks. The PR stays draft.
+
+<!-- hangar-ci-round pr=${url} head=${head} -->" >/dev/null || {
+    CI_REQUEUE_NOTE="could not record CI revision round"; return 1; }
+  # The claim is released only after the retry trigger is durable; WIP stays
+  # with this issue and is re-pointed by the next claim of the same issue.
+  gh issue edit "$issue" --repo "$REPO_SLUG" --remove-label squad:processing --remove-label squad:review-pending \
+    --remove-label squad:done --add-label squad:revision >/dev/null || {
+    CI_REQUEUE_NOTE="could not requeue revision label"; return 1; }
+  tmp="${LOOP_STATE_DIR}/ci-revision-${issue}.json"
+  if ! jq --argjson rounds "$((used + 1))" --arg cause "$cause" '. + {ciRounds:$rounds,ciCause:$cause}' <<<"$pending" >"$tmp" ||
+    ! chmod 600 "$tmp" || ! rm -f "${LOOP_STATE_DIR}/pending.json"; then
+    log_error "CI revision receipt not archived; operator recovery required"; return 0
+  fi
+  # A failed release keeps CURRENT_ISSUE set: the main loop stops admission
+  # instead of looping; the claim ref keeps other workers off the issue.
+  release_issue_claim || { log_error "CI revision queued but claim release failed; operator recovery required"; return 0; }
+  CURRENT_ISSUE="" CURRENT_ISSUE_CONTEXT="" TASK_DEADLINE=0
+  log "${cause} on ${head:0:12}; requeued #${issue} as CI revision $((used + 1))/${LOOP_MAX_CI_ROUNDS} (draft kept): ${url}"
+  return 0
+}
+
 resume_pending_publication() {
   local file="${LOOP_STATE_DIR}/pending.json" pending snapshot branch head body base issue url phase
   [[ -f "$file" ]] || return 1
@@ -2795,7 +2904,7 @@ resume_pending_publication() {
   ISSUE_CONTRACT_HASH=$(jq -r .contractHash <<<"$pending")
   TASK_DEADLINE=$(jq -r .deadline <<<"$pending")
   local reason=""
-  if ! snapshot=$(read_pr_snapshot "$branch"); then
+  if ! snapshot=$(read_pr_snapshot "$branch" "$base"); then
     reason="Cannot read current-head PR checks (permission or API failure)"
   elif [[ "$(jq -r .state <<<"$snapshot")" != OPEN ]]; then
     # Closed/merged PRs cannot be downgraded. They are terminal, not a retry loop.
@@ -2815,10 +2924,12 @@ resume_pending_publication() {
   elif ! task_seconds_remaining >/dev/null; then
     reason="Publication/check deadline exceeded; explicit retry required"
   fi
+  local ci_cause=""
   if [[ -z "$reason" ]]; then
-    if [[ "$(jq -r .headRefOid <<<"$snapshot")" != "$head" ||
-        "$(jq -r .baseRefOid <<<"$snapshot")" != "$base" || "$(jq -r .body <<<"$snapshot")" != "$body" ]]; then
-      reason="PR base, head or body changed; bound evidence invalidated"
+    if [[ "$(jq -r .headRefOid <<<"$snapshot")" != "$head" || "$(jq -r .body <<<"$snapshot")" != "$body" ]]; then
+      reason="PR head or body changed; bound evidence invalidated"
+    elif ! pinned_base_contained "$base" "$(jq -r .baseRefOid <<<"$snapshot")"; then
+      reason="PR base $(jq -r '.baseRefOid[0:12]' <<<"$snapshot") no longer contains the pinned base ${base:0:12} (or compare unavailable); bound evidence invalidated"
     elif [[ -z "$(jq -r '.checkPolicy.policyHash // empty' <<<"$pending")" ||
         "$(jq -r .checkPolicy.policyHash <<<"$pending")" != "$(jq -r .checkPolicy.policyHash <<<"$snapshot")" ]]; then
       reason="Pinned remote-check policy changed or missing; explicit retry required"
@@ -2838,12 +2949,18 @@ resume_pending_publication() {
       return 0
     elif jq -e 'any(.statusCheckRollup[]?; .state == "FAILURE" or .state == "ERROR" or
       (.status == "COMPLETED" and (.conclusion == "FAILURE" or .conclusion == "CANCELLED" or .conclusion == "TIMED_OUT" or .conclusion == "ACTION_REQUIRED")))' <<<"$snapshot" >/dev/null; then
-      reason="Current-head remote check failed; explicit revision required"
+      ci_cause="Required remote check failed"
+    elif [[ "$(jq -r .mergeable <<<"$snapshot")" == CONFLICTING ]]; then
+      ci_cause="PR conflicts with ${DEFAULT_BRANCH}"
     elif ! remote_checks_ready "$snapshot" || [[ "$(jq -r .mergeable <<<"$snapshot")" != MERGEABLE ]]; then
       # Bounded waiting only, never a new implementer/reviewer run.
       log "Draft still pending required checks/mergeability: ${url}"
       return 0
     fi
+  fi
+  if [[ -n "$ci_cause" ]]; then
+    requeue_ci_revision "$pending" "$issue" "$branch" "$url" "$head" "$ci_cause" && return 0
+    reason="${ci_cause} on the current head; ${CI_REQUEUE_NOTE}"
   fi
   if [[ -n "$reason" ]]; then
     ensure_pr_is_draft "$branch" || { log_error "Cannot enforce draft; operator intervention required"; return 0; }

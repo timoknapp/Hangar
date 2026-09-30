@@ -134,9 +134,28 @@ git checkout -q main
 printf 'shipped\n' > shipped.txt
 git add shipped.txt && git commit -qm shipped && git push -q origin main
 git checkout -q feature
-reject fresh_base_unchanged
+fresh_base_compatible || fail "clean master advance blocked: $BASE_DRIFT_REASON"
+[[ "$TASK_BASE_SHA" == "$BASE" && "$(git rev-parse HEAD)" == "$HEAD_SHA" && -f app.txt ]] || fail 'base drift moved pin or work'
+SHIPPED=$(git rev-parse main)
+ok 'clean master advance keeps the pinned base and publishes nothing different'
+# A real conflict with the newer master blocks with the conflicting paths.
+git checkout -q -B conflicting-main "$SHIPPED"
+printf 'master rewrote this line\n' > app.txt
+git commit -qam 'conflicting master change' && git push -q origin HEAD:main
+git checkout -q feature
+reject fresh_base_compatible
+[[ "$BASE_DRIFT_REASON" == *'conflicts with HEAD in: app.txt'* ]] || fail "conflict reason: $BASE_DRIFT_REASON"
+[[ "$TASK_BASE_SHA" == "$BASE" && "$(git rev-parse HEAD)" == "$HEAD_SHA" ]] || fail 'conflict check changed work'
+# Rewritten history (pinned base no longer contained) blocks as well.
+git checkout -q --orphan rewritten && git commit -qm rewritten
+git push -q -f origin HEAD:main
+git checkout -q -f feature
+reject fresh_base_compatible
+[[ "$BASE_DRIFT_REASON" == *'no longer contains the pinned base'* ]] || fail "rewrite reason: $BASE_DRIFT_REASON"
+git push -q -f origin "$SHIPPED:main"
+git branch -q -D conflicting-main rewritten
 [[ -f app.txt ]] || fail 'base drift damaged work'
-ok 'remote base advance invalidates task instead of showing reversions'
+ok 'only a real conflict or rewritten master blocks, with the conflicting file list'
 TASK_BASE_SHA="$BASE" TASK_START_HEAD="$BASE" TASK_BRANCH=feature
 # Full >1500-line input and trusted base policy, actual final summary all delivered.
 seq 1 1800 > late.txt
@@ -295,13 +314,26 @@ PR_MODE=pending
 GH_CALLS="$TMP/readiness-calls"
 : > "$GH_CALLS"
 release_owned_ref() { return 0; }
+PR_BASE="$BASE" PR_MERGEABLE=MERGEABLE COMPARE_STATUS=ahead COMMENTS_MODE=""
+CI_COMMENTS="$TMP/ci-comments.json"
+echo '[]' >"$CI_COMMENTS"
 gh() {
   printf '%s\n' "$*" >>"$GH_CALLS"
   if [[ "$1 $2" == 'issue view' ]]; then echo "$ISSUE"; return 0; fi
+  if [[ "$1 $2" == 'issue comment' ]]; then
+    [[ "$COMMENTS_MODE" != fail ]] || return 1
+    jq --arg body "${@: -1}" '. + [{body:$body}]' "$CI_COMMENTS" >"$CI_COMMENTS.tmp" && mv "$CI_COMMENTS.tmp" "$CI_COMMENTS"; return 0
+  fi
   if [[ "$1" == api ]]; then
-    if [[ "$2" == */pulls/1 ]]; then
+    if [[ "$2" == --paginate && "$3" == */issues/1/comments* ]]; then
+      [[ "$COMMENTS_MODE" != fail ]] || return 1
+      cat "$CI_COMMENTS"
+    elif [[ "$2" == */compare/* ]]; then
+      [[ "$2" == */compare/"${BASE}...${PR_BASE}" ]] || return 1
+      echo "$COMPARE_STATUS"
+    elif [[ "$2" == */pulls/1 ]]; then
       gh pr view fixture --json fixture | jq '{state:"open",draft:.isDraft,merged:false,
-        head:{sha:.headRefOid},base:{sha:.baseRefOid},body,mergeable:true}'
+        head:{sha:.headRefOid},base:{sha:.baseRefOid},body,mergeable:(if .mergeable=="MERGEABLE" then true elif .mergeable=="CONFLICTING" then false else null end)}'
     else echo "$REMOTE_OID"; fi
     return 0
   fi
@@ -316,8 +348,8 @@ gh() {
     if [[ "$PR_MODE" == pending ]]; then checks=$(jq '.statusCheckRollup[0].status="IN_PROGRESS"' <<<"$checks"); fi
     if [[ "$PR_MODE" == failed ]]; then checks=$(jq '.statusCheckRollup[0].conclusion="FAILURE"' <<<"$checks"); fi
     if [[ "$PR_MODE" == drift ]]; then head=drift; fi
-    jq --arg head "$head" --arg base "$BASE" --arg body "$body" --argjson draft "$REMOTE_DRAFT" \
-      '. + {state:"OPEN",headRefOid:$head,baseRefOid:$base,body:$body,isDraft:$draft,mergeable:"MERGEABLE"}' <<<"$checks"
+    jq --arg head "$head" --arg base "$PR_BASE" --arg body "$body" --argjson draft "$REMOTE_DRAFT" --arg mergeable "$PR_MERGEABLE" \
+      '. + {state:"OPEN",headRefOid:$head,baseRefOid:$base,body:$body,isDraft:$draft,mergeable:$mergeable}' <<<"$checks"
     return 0
   fi
 }
@@ -326,6 +358,10 @@ resume_pending_publication
 [[ -f "$LOOP_STATE_DIR/pending.json" ]] || fail 'pending receipt lost'
 if grep -q 'pr ready' "$GH_CALLS"; then fail 'pending checks marked ready'; fi
 PR_MODE=success
+# Other PRs merged meanwhile: GitHub reports a newer PR base that still contains
+# the pinned base. Evidence stays valid (was a hard block before).
+PR_BASE=$(git rev-parse origin/main)
+[[ "$PR_BASE" != "$BASE" ]] || fail 'fixture base did not move'
 resume_pending_publication
 [[ "$(jq -r .phase "$LOOP_STATE_DIR/pending.json")" == promoting ]] || fail 'promoting phase not durable'
 PR_MODE=pending
@@ -338,17 +374,73 @@ resume_pending_publication
 grep -q 'pr ready' "$GH_CALLS" || fail 'successful draft not promoted'
 grep -q -- '--add-label squad:done' "$GH_CALLS" || fail 'success status missing'
 ok 'normal poll resumes receipt and only promotes after exact-head checks'
-# Reset the receipt and prove terminal CI failure consumes it without Ready or code retry.
-CURRENT_CLAIM_REF=refs/heads/squad-claims/issue-1 CURRENT_CLAIM_OID=owned
-TASK_DEADLINE=$(( $(date +%s) + 600 ))
-REMOTE_DRAFT=true
-PR_MODE=failed
-: > "$GH_CALLS"
-save_pending_publication 1 feature https://example.invalid/pr/1
+ok 'PR base moved by other merges keeps evidence while it contains the pinned base'
+# PR base that no longer contains the pinned base (or unverifiable) still blocks.
+fresh_receipt() {
+  CURRENT_CLAIM_REF=refs/heads/squad-claims/issue-1 CURRENT_CLAIM_OID=owned
+  TASK_DEADLINE=$(( $(date +%s) + 600 )) REMOTE_DRAFT=true
+  rm -f "$LOOP_STATE_DIR"/blocked-publication-1.json "$LOOP_STATE_DIR"/ci-revision-1.json
+  : > "$GH_CALLS"
+  save_pending_publication 1 feature https://example.invalid/pr/1
+}
+for COMPARE_STATUS in diverged behind; do
+  fresh_receipt; PR_MODE=success
+  resume_pending_publication
+  [[ -f "$LOOP_STATE_DIR/blocked-publication-1.json" ]] || fail "$COMPARE_STATUS PR base accepted"
+  grep -q 'no longer contains the pinned base' "$LOOP_STATE_DIR/blocked-1.json" || fail 'base block reason'
+  if grep -q 'pr ready' "$GH_CALLS"; then fail 'unrelated base promoted'; fi
+done
+COMPARE_STATUS=ahead
+ok 'PR base without the pinned base blocks; head/body remain exact'
+# A red required check requeues a bounded CI revision; the draft stays, the
+# claim is released only after the durable retry trigger, no Ready, no model run.
+LOOP_MAX_CI_ROUNDS=2
+for round in 1 2; do
+  fresh_receipt; PR_MODE=failed
+  resume_pending_publication
+  [[ ! -f "$LOOP_STATE_DIR/pending.json" && -f "$LOOP_STATE_DIR/ci-revision-1.json" ]] || fail "CI round $round not requeued"
+  [[ "$(jq -r .ciRounds "$LOOP_STATE_DIR/ci-revision-1.json")" == "$round" ]] || fail 'receipt round count'
+  grep -q -- '--add-label squad:revision' "$GH_CALLS" || fail 'revision trigger missing'
+  if grep -qE '^pr ready|--add-label squad:(done|failed)' "$GH_CALLS"; then fail 'CI failure promoted or terminal'; fi
+  [[ -z "$CURRENT_CLAIM_REF" && -z "$CURRENT_ISSUE" ]] || fail 'claim not released after requeue'
+  # Next round is a new head (the revision pushes new commits).
+  git commit -q --allow-empty -m "ci fix $round"
+  VERIFIED_HEAD=$(git rev-parse HEAD) REVIEWED_HEAD=$(git rev-parse HEAD)
+done
+[[ "$(ci_rounds_used 1 https://example.invalid/pr/1)" == 2 ]] || fail 'round markers not counted per head'
+fresh_receipt; PR_MODE=failed
 resume_pending_publication
-[[ ! -f "$LOOP_STATE_DIR/pending.json" && -f "$LOOP_STATE_DIR/blocked-publication-1.json" ]] || fail 'failed checks stayed in retry loop'
-if grep -q -- '--add-label squad:done' "$GH_CALLS"; then fail 'remote failure marked done'; fi
-ok 'failed current-head CI is terminal without another outer attempt'
+[[ -f "$LOOP_STATE_DIR/blocked-publication-1.json" && ! -f "$LOOP_STATE_DIR/ci-revision-1.json" ]] || fail 'exhausted budget requeued'
+grep -q 'budget exhausted (2/2)' "$LOOP_STATE_DIR/blocked-1.json" || fail 'exhausted reason'
+if grep -qE '^pr ready [^-]*$|--add-label squad:revision' "$GH_CALLS"; then fail 'exhausted CI round retried'; fi
+ok 'red required check requeues at most LOOP_MAX_CI_ROUNDS revisions, then blocks'
+# Unreadable round history, disabled budget and a PR conflict with master.
+echo '[]' >"$CI_COMMENTS"
+COMMENTS_MODE=fail; fresh_receipt; PR_MODE=failed
+resume_pending_publication
+grep -q 'CI round history unavailable' "$LOOP_STATE_DIR/blocked-1.json" || fail 'history failure did not block closed'
+COMMENTS_MODE=""
+LOOP_MAX_CI_ROUNDS=0; fresh_receipt
+resume_pending_publication
+grep -q 'automatic CI revisions disabled' "$LOOP_STATE_DIR/blocked-1.json" || fail 'disabled budget requeued'
+LOOP_MAX_CI_ROUNDS=2
+fresh_receipt; PR_MODE=success PR_MERGEABLE=CONFLICTING
+resume_pending_publication
+[[ -f "$LOOP_STATE_DIR/ci-revision-1.json" ]] || fail 'conflict waited instead of requeue'
+[[ "$(jq -r .ciCause "$LOOP_STATE_DIR/ci-revision-1.json")" == 'PR conflicts with main' ]] || fail 'conflict cause'
+PR_MERGEABLE=MERGEABLE
+fresh_receipt; save_pending_publication 1 feature https://example.invalid/pr/1
+jq '.ciRounds=2' "$LOOP_STATE_DIR/pending.json" >"$TMP/p2"; mv "$TMP/p2" "$LOOP_STATE_DIR/pending.json"
+echo '[]' >"$CI_COMMENTS"; PR_MODE=failed
+resume_pending_publication
+grep -q 'budget exhausted (2/2)' "$LOOP_STATE_DIR/blocked-1.json" || fail 'receipt counter ignored when markers missing'
+ok 'CI rounds fail closed on unreadable history, honor receipt counter; conflicts requeue instead of waiting forever'
+# Checks start only after publication: the receipt keeps at least the check wait.
+fresh_receipt; TASK_DEADLINE=$(( $(date +%s) + 5 ))
+save_pending_publication 1 feature https://example.invalid/pr/1
+(( $(jq -r .deadline "$LOOP_STATE_DIR/pending.json") >= $(date +%s) + LOOP_CHECK_WAIT_SECONDS - 5 )) || fail 'no bounded check wait'
+rm -f "$LOOP_STATE_DIR/pending.json"
+ok 'pending checks get a bounded wait even after a long implementation'
 # Generic planner refreshes trusted goal content and skips identical input, no LLM churn.
 CURRENT_ISSUE="" TASK_DEADLINE=0
 LOOP_AUTONOMOUS=true LOOP_GOAL_FILE=BACKLOG.md LOOP_WORK_SCOPE=all
@@ -563,3 +655,105 @@ ok 'operator policy failure stays terminal with precise diagnosis'
   ok 'stale local revision branches are fast-forwarded or archived, never deleted'
 )
 
+
+# End-to-end offline dry run through the REAL process_issue/process_revision:
+# local Git remote, real gates/critic parser/publisher; fakes only at the GitHub
+# API, model and credential boundaries. The fake model pushes a master commit in
+# the middle of its session (and the critic during review).
+(
+  R="$TMP/e2e-remote" P="$TMP/e2e-pusher" CALLS="$TMP/e2e-calls" OUT="$TMP/e2e-out"
+  WORKSPACE_DIR="$TMP/e2e-work" CLEAN_REPO_URL="$R"
+  begin_task; TASK_DEADLINE=0 LOOP_STATE_DIR="$TMP/e2e-state" LOOP_REQUIRED_LABELS='[]' LOOP_MAX_ACTIVE_ISSUES=0
+  LOOP_CHECK_BACKEND=checks LOOP_REQUIRED_CHECKS='["CI"]' LOOP_REQUIRED_WORKFLOWS='[]'
+  LOOP_CONDITIONAL_WORKFLOWS='[]' LOOP_IGNORED_WORKFLOWS='[]' LOOP_PROFILE_DIR=""
+  LOOP_VERIFY=true LOOP_CRITIC=true LOOP_CRITIC_RUBRIC=auto LOOP_COPILOT_SECRET_FILTER_MODULE=off
+  CRITIC_INPUT_NONCE_OVERRIDE=fixture-nonce COPILOT_PAT=fixture-model-credential
+  command git init -q --bare "$R"
+  command git init -q -b main "$TMP/e2e-seed"
+  (cd "$TMP/e2e-seed" && mkdir .squad && printf 'active policy\n' >.squad/GOVERNANCE.md &&
+    printf 'shared v1\n' >shared.txt && command git add . && command git commit -qm base && command git push -q "$R" main)
+  command git --git-dir="$R" symbolic-ref HEAD refs/heads/main
+  command git clone -q --no-hardlinks "$R" "$WORKSPACE_DIR"
+  command git clone -q "$R" "$P"
+  cd "$WORKSPACE_DIR"
+  init_loop_state
+  # Real sanitizer (an earlier fixture replaced it); the remote is the local bare repo.
+  eval "$(sed -n '/^sanitize_repository_git_config() {/,/^}/p' "$ROOT/worker/worker-loop.sh")"
+  sanitize_repository_git_config
+  push_master() { (cd "$P" && command git pull -q --ff-only origin main && printf '%s\n' "$2" >"$1" &&
+    command git add "$1" && command git commit -qm "master: $1" && command git push -q origin HEAD:main); }
+  # Boundaries: credentials, user switch for scratch files, launcher, GitHub API, model.
+  ensure_token() { return 0; }
+  read_repo_file() { local r; r=$(resolve_repo_file_path "$1") || return 1; sed -n "1,${2:-1200}p" "$r"; }
+  remove_repo_file_as_agent() { rm -f -- "$WORKSPACE_DIR/$1"; }
+  run_agent_command() { echo HANGAR_AGENT_STARTED; /usr/bin/bash --noprofile --norc -c "$1"; }
+  claim_issue() { CURRENT_CLAIM_REF="refs/heads/squad-claims/issue-$1" CURRENT_CLAIM_OID=e2e-owner CURRENT_MANUAL_INTAKE=false
+    ISSUE_CONTRACT_HASH=$(issue_contract_hash "$E2E_ISSUE"); }
+  release_owned_ref() { return 0; }
+  gh() {
+    printf '%s\n' "$*" >>"$CALLS"
+    case "$1 $2" in
+      'issue view') if [[ "$*" == *'--json comments'* ]]; then echo '[owner] Also add revision.txt.'; else echo "$E2E_ISSUE"; fi ;;
+      'issue comment'|'issue edit'|'pr edit') return 0 ;;
+      'pr list') if [[ -f "$TMP/e2e-pr" ]]; then jq -n --arg b "$E2E_BRANCH" '[{url:"https://example.invalid/pr/5",headRefName:$b,baseRefName:"main"}]'; else echo '[]'; fi ;;
+      'pr create') touch "$TMP/e2e-pr"; echo https://example.invalid/pr/5 ;;
+      'pr view') echo true ;;
+      'run list') return 1 ;;
+      api*) if [[ "$*" == *'/comments'* ]]; then echo '[]'; else echo "$CURRENT_CLAIM_OID"; fi ;;
+      *) echo "unexpected gh $*" >&2; return 1 ;;
+    esac
+  }
+  run_agent_copilot() {
+    local arg prev="" prompt=""
+    for arg in "$@"; do [[ "$prev" != -p ]] || prompt="$arg"; prev="$arg"; done
+    if [[ " $* " == *' --output-format json '* ]]; then
+      [[ -z "${E2E_REVIEW_PUSH:-}" ]] || push_master "$E2E_REVIEW_PUSH" 'moved during review'
+      bash "$ROOT/tests/critic-complete-input.test.sh" --emit "$(find "$WORKSPACE_DIR" -maxdepth 1 -name '.critic-input.*.md')"
+      return
+    fi
+    echo "$prompt" >"$TMP/e2e-prompt"
+    printf '%s\n' "$E2E_CHANGE" >"$E2E_FILE"
+    command git add "$E2E_FILE" && command git commit -qm "work on $E2E_FILE"
+    push_master "$E2E_MASTER_FILE" "$E2E_MASTER_TEXT"
+    mkdir -p .squad
+    printf '## Problem\nMissing file.\n## Root Cause\nNever added.\n## Solution\nAdd it.\n## Testing\nCI-verified (CI).\n### UI evidence\nUI: N/A — no UI.\n## Future Work\nNone.\n' >.squad/pr-summary.md
+  }
+  e2e_issue() { E2E_ISSUE=$(jq -n --argjson n "$1" --arg t "$2" '{number:$n,state:"OPEN",title:$t,body:"Add the requested file.",labels:[{name:"squad"},{name:"squad:processing"}]}')
+    E2E_BRANCH="squad/$1-$(slugify "$2")"; rm -f "$TMP/e2e-pr" "$LOOP_STATE_DIR/pending.json"; : >"$CALLS"
+    CURRENT_ISSUE="" CURRENT_CLAIM_REF=""; }
+
+  # 1) master moves (clean) during implementation and again during review.
+  e2e_issue 5 'Add feature file'
+  PINNED=$(command git -C "$P" rev-parse HEAD)
+  E2E_FILE=feature.txt E2E_CHANGE=feature E2E_MASTER_FILE=other.txt E2E_MASTER_TEXT='other PR' E2E_REVIEW_PUSH=review.txt
+  process_issue "$E2E_ISSUE" false >"$OUT" 2>&1 || { cat "$OUT"; fail 'clean master drift blocked publication'; }
+  HEAD5=$(git rev-parse HEAD)
+  [[ "$(command git --git-dir="$R" rev-parse "refs/heads/$E2E_BRANCH")" == "$HEAD5" ]] || fail 'published head differs'
+  jq -e --arg b "$PINNED" --arg h "$HEAD5" '.base==$b and .head==$h and .verified==$h and .reviewed==$h' \
+    "$LOOP_STATE_DIR/pending.json" >/dev/null || fail 'receipt not bound to pinned base and exact head'
+  [[ "$(grep -c 'HEAD merges cleanly, pinned base kept' "$OUT")" -ge 2 ]] || fail 'master move not logged'
+  grep -q -- '--draft' "$CALLS" || fail 'not draft-first'
+  if grep -q -- '--add-label squad:failed' "$CALLS"; then fail 'clean drift marked failed'; fi
+  ok 'E2E: master moves during implementation and review; draft published at the pinned base'
+
+  # 2) Revision on the existing PR while master moves again (base integration + drift).
+  mv "$LOOP_STATE_DIR/pending.json" "$TMP/e2e-pending-1"; touch "$TMP/e2e-pr"; : >"$CALLS"
+  CURRENT_ISSUE="" CURRENT_CLAIM_REF="" E2E_REVIEW_PUSH=""
+  E2E_FILE=revision.txt E2E_CHANGE=revision E2E_MASTER_FILE=third.txt E2E_MASTER_TEXT='third PR'
+  process_revision "$E2E_ISSUE" >"$OUT" 2>&1 || { cat "$OUT"; fail 'revision with master drift blocked'; }
+  grep -q 'Fresh Base Integration' "$TMP/e2e-prompt" || fail 'revision base integration not announced'
+  [[ "$(command git --git-dir="$R" rev-parse "refs/heads/$E2E_BRANCH")" == "$(git rev-parse HEAD)" ]] || fail 'revision not pushed'
+  git merge-base --is-ancestor "$HEAD5" HEAD || fail 'revision rewrote published history'
+  grep -q 'HEAD merges cleanly, pinned base kept' "$OUT" || fail 'revision drift not logged'
+  ok 'E2E: revision integrates the moved base and publishes with lease while master moves again'
+
+  # 3) A conflicting master commit during implementation blocks with the file list.
+  mv "$LOOP_STATE_DIR/pending.json" "$TMP/e2e-pending-2"
+  e2e_issue 6 'Change shared file'
+  E2E_FILE=shared.txt E2E_CHANGE='shared from task' E2E_MASTER_FILE=shared.txt E2E_MASTER_TEXT='shared from master'
+  reject process_issue "$E2E_ISSUE" false >"$OUT" 2>&1
+  grep -q 'Base check after implementation: main moved to .* conflicts with HEAD in: shared.txt' "$LOOP_STATE_DIR/blocked-6.json" || fail 'conflict reason missing file list'
+  if command git --git-dir="$R" rev-parse -q --verify "refs/heads/$E2E_BRANCH" >/dev/null || grep -q 'pr create' "$CALLS"; then fail 'conflict published'; fi
+  [[ -f "$LOOP_STATE_DIR/pending.json" ]] && fail 'conflict left pending receipt'
+  ok 'E2E: real conflict with a moved master blocks before gates/publication and names the files'
+)

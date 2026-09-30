@@ -231,8 +231,9 @@ session is retried with the critic's feedback as additional context.
 Verify runs through the same zero-capability launcher as the startup canary.
 Infrastructure start errors, timeouts, HEAD/tracked-tree mutations and profile exit 78 block without code repair.
 Only code failures after a successful clean-base check may consume the shared `maxRetries` correction allowance.
-Unresolved local gates retain local work and block publication; failed remote checks retain a draft.
-All implementation, correction, verification and pending-check time shares `maxTaskSeconds`.
+Unresolved local gates retain local work and block publication; failed remote checks retain a draft and requeue a bounded CI revision.
+Implementation, correction and verification share `maxTaskSeconds`; pending checks get a separate bounded wait.
+A moving default branch does not invalidate the pinned base unless it conflicts with HEAD or no longer contains the base.
 
 ### Budget and draft safety
 
