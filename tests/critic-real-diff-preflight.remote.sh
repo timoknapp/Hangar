@@ -66,14 +66,15 @@ find "$fixture_repo" -type d -exec chmod 2770 {} +
 find "$fixture_repo" -type f -exec chmod 660 {} +
 cat >/tmp/critic-fixture-run.sh <<'RUN'
 set -euo pipefail
-export WORKER_ID=critic-synthetic WORKSPACE_DIR=/tmp/critic-synthetic-diff
+export HOME=/home/copilot WORKER_ID=critic-synthetic WORKSPACE_DIR=/tmp/critic-synthetic-diff
 export GITHUB_OWNER=example-org GITHUB_REPO=synthetic-app REPO_BRANCH=main
 export LOOP_AUTONOMOUS=false LOOP_CRITIC=true LOOP_CRITIC_RUBRIC=repo-aware
 export LOOP_VERIFY=off LOOP_IMPLEMENTER=plain LOOP_MAX_REVIEW_BYTES=262144
 source /home/copilot/worker-loop.sh
 cd "$WORKSPACE_DIR"
 command git config --global --add safe.directory "$WORKSPACE_DIR"
-CURRENT_ISSUE=1
+# No real issue: the publisher-verified issue evidence cannot exist for a synthetic repo.
+CURRENT_ISSUE=""
 CURRENT_ISSUE_CONTEXT='Refactor synthetic module handlers without changing admin authorization. The authorization function must deny non-admins.'
 TASK_BASE_SHA=$(git rev-parse main)
 TASK_START_HEAD="$TASK_BASE_SHA"
@@ -88,15 +89,15 @@ Refactor handlers, do not alter access control.
 Runtime critic fixture, no product test claim. UI: N/A — no UI.
 ## Future Work
 None.'
-run_critic
+run_critic || { echo "Clean control not approved: kind=${CRITIC_FAILURE_KIND} ${CRITIC_FEEDBACK:0:2000}" >&2; exit 1; }
 # Deliberate defect sorts after >1500 lines; critic must reject it, not approve a prefix.
 printf 'function authorize(isAdmin) { return true; }\nmodule.exports = { authorize };\n' >z-security/access.js
 git -c user.name=Fixture -c user.email=fixture@example.invalid add z-security/access.js
 git -c user.name=Fixture -c user.email=fixture@example.invalid commit -qm 'fixture: incorrect admin authorization'
 rc=0
 run_critic || rc=$?
-test "$rc" = 1
-test "$CRITIC_FAILURE_KIND" = review
+test "$rc" = 1 || { echo "Defect not rejected: rc=${rc}" >&2; exit 1; }
+test "$CRITIC_FAILURE_KIND" = review || { echo "Defect run failed as ${CRITIC_FAILURE_KIND}: ${CRITIC_FEEDBACK:0:2000}" >&2; exit 1; }
 printf '%s\n' "$CRITIC_FEEDBACK" | grep -Eqi 'authoriz|admin|access'
 echo 'Synthetic full-diff critic: clean control approved; late authorization defect rejected'
 RUN
