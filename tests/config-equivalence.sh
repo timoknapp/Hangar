@@ -22,7 +22,7 @@ if [[ -z "$groups" ]]; then
 fi
 
 # Fields that MUST be equivalent within a group (autonomous excluded)
-EQUIV_FIELDS=(critic criticModel criticRubric verify maxRetries maxPrsPerDay maxOpenAutoIssues workScope implementer requiredLabels manualIssueCreators unattendedLabels requiredChecks maxActiveIssues maxTaskSeconds maxReviewBytes profileDir checkBackend requiredWorkflows conditionalWorkflows ignoredWorkflows)
+EQUIV_FIELDS=(critic criticModel criticRubric verify maxRetries maxRetriesManual maxPrsPerDay maxOpenAutoIssues workScope implementer requiredLabels manualIssueCreators unattendedLabels requiredChecks maxActiveIssues maxTaskSeconds maxReviewBytes profileDir checkBackend requiredWorkflows conditionalWorkflows ignoredWorkflows)
 
 policy_value() {
   local worker="$1" field="$2"

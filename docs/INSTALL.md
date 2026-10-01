@@ -132,6 +132,7 @@ Edit `repos.json`. Each top-level key is a worker ID (e.g. `worker-1`, `worker-2
       "criticModel":        "",
       "verify":             "auto",
       "maxRetries":         2,
+      "maxRetriesManual":   4,
       "maxPrsPerDay":       2,
       "maxOpenAutoIssues":  3,
       "goalFile":           "auto",

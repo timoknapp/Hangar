@@ -13,6 +13,7 @@
       "criticModel": "",
       "verify": "auto",
       "maxRetries": 2,
+      "maxRetriesManual": 4,
       "maxPrsPerDay": 2,
       "maxOpenAutoIssues": 3,
       "goalFile": "auto",

@@ -254,7 +254,7 @@ sequenceDiagram
     end
     opt critic enabled after verification
         Worker->>Critic: fresh read-only review of attested diff input
-        Critic-->>Worker: APPROVE / REQUEST_CHANGES / unavailable
+        Critic-->>Worker: APPROVE / REQUEST_CHANGES + validated findings / unavailable
         Note over Worker,Critic: Critic-driven fixes are fully re-verified
     end
     Worker->>GH: publisher pushes branch and creates draft PR
@@ -375,8 +375,8 @@ sequenceDiagram
     participant Critic as "Independent critic"
 
     Worker->>Critic: Review attested diff against rubric
-    Critic-->>Worker: REQUEST_CHANGES with reasons
-    Worker->>Impl: Apply critic feedback
+    Critic-->>Worker: REQUEST_CHANGES with structured BLOCK findings
+    Worker->>Impl: Apply cumulative open findings (untrusted data)
     Impl-->>Worker: Revised commits
     Worker->>Verify: Re-run complete build and tests
     Verify-->>Worker: PASS
@@ -494,6 +494,7 @@ sequenceDiagram
 | `loop.criticModel` | same as `model` | Separate model for the critic pass |
 | `loop.verify` | `"off"` | `"off"` \| `"auto"` \| `"<cmd>"` \| `".loop/verify.sh"` |
 | `loop.maxRetries` | `2` | Total correction allowance shared by verification and critic |
+| `loop.maxRetriesManual` | `4` | Same allowance for publisher-verified manual issues (`manualIssueCreators` + approval provenance) |
 | `loop.maxPrsPerDay` | `0` (off) | Repository-wide daily cap for configured unattended attempts, including revisions |
 | `loop.maxOpenAutoIssues` | `3` | Concurrent self-generated issue cap |
 | `loop.goalFile` | `"auto"` | Goal source for autonomous planning; discovers `.loop/GOAL.md`, `BACKLOG.md`, or `.squad/GOAL.md` |

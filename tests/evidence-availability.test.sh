@@ -35,7 +35,7 @@ startup() (
 LOOP_CRITIC=true LOOP_CRITIC_MODEL=fixture-model LOOP_MAX_REVIEW_BYTES=1048576
 COPILOT_PAT=fixture CRITIC_INPUT_NONCE_OVERRIDE=fixture-nonce
 CURRENT_ISSUE_CONTEXT='Change only the fixture file.' FINAL_PR_BODY='Synthetic fixture change.'
-export FAKE_COPILOT_OUTPUT=$'VERDICT: APPROVE\nINPUT_NONCE: fixture-nonce\n- Synthetic transport only.'
+export FAKE_COPILOT_OUTPUT=$'VERDICT: APPROVE\nINPUT_NONCE: fixture-nonce\nFINDINGS_JSON_BEGIN\n[]\nFINDINGS_JSON_END\n- Synthetic transport only.'
 run_agent_copilot() {
   local input
   input=$(find "$WORKSPACE_DIR" -maxdepth 1 -name '.critic-input.*.md')

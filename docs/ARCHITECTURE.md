@@ -209,13 +209,28 @@ session runs against the diff. The critic session:
 - optionally uses a different model (`loop.criticModel`)
 - reads the complete pinned merge-base diff and actual final PR body from a workspace-scoped file
 - reads rubric/issue/diff from a temporary workspace file and must echo a nonce found only there
-- outputs exactly one attested `APPROVE` or `REQUEST_CHANGES` verdict
+- outputs exactly one attested `APPROVE` or `REQUEST_CHANGES` verdict, then one JSON findings block
 - binds base/head/diff/body/input hashes and rejects input tampering or HEAD drift
 - blocks oversized input explicitly, never silently reviews a prefix
 - reads active rules from trusted base; proposed rule changes are review data
 
-If the critic returns `REQUEST_CHANGES` and retries remain (`loop.maxRetries`), the implementation
-session is retried with the critic's feedback as additional context.
+Findings have `id`, `severity` (`BLOCK`|`SUGGESTION`), `category`, `location`, `evidence`, `status`
+(`open`|`resolved`|`invalid`) and, when closed, `resolution`. There is no count cap. Severity is fixed by
+category (BLOCK: correctness, security, data-loss, acceptance, human-decision, pr-body, testing, scope,
+duplicated-policy, unnecessary-architecture, ui-evidence, repo-rule; SUGGESTION: style, naming,
+simplification). The publisher rejects unknown fields/categories, mismatched severity, duplicates,
+multi-line or oversized text (64 KiB, 200 findings), APPROVE with an open BLOCK and REQUEST_CHANGES
+without one. Invalid output is `infrastructure`, oversize `incomplete`; nothing is truncated.
+
+From round 2 the critic input contains the publisher-kept ledger of validated findings as untrusted
+memory; full diff delivery is still required. Every prior open finding needs a status; only the critic
+closes one, with concrete resolution evidence. New BLOCKs and regressions are always allowed.
+
+If the critic returns `REQUEST_CHANGES` and retries remain (`loop.maxRetries`, or `loop.maxRetriesManual`
+for publisher-verified manual issues), the implementation session receives the cumulative open findings as
+fenced untrusted data. A correction prompt over 120000 bytes blocks instead of truncating. Open
+SUGGESTION findings are rendered (sanitized, bounded) into `## Testing` before the body hash; if an approval
+adds new suggestions, the same head is re-reviewed once with the updated body.
 
 ### Verify hook
 
