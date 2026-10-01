@@ -386,6 +386,9 @@ export FAKE_COPILOT_EXIT=0
 export FAKE_COPILOT_OUTPUT="Review input loaded.
 VERDICT: APPROVE
 INPUT_NONCE: ${critic_nonce}
+FINDINGS_JSON_BEGIN
+[]
+FINDINGS_JSON_END
 - Correct and covered.
 "
 run_and_capture_rc critic_rc run_critic
@@ -401,12 +404,15 @@ pass "critic accepts coverage-checked approval with bounded argv and cleanup"
 
 export FAKE_COPILOT_OUTPUT="VERDICT: REQUEST_CHANGES
 INPUT_NONCE: ${critic_nonce}
-- Missing regression coverage.
+FINDINGS_JSON_BEGIN
+[{\"id\":\"F1\",\"severity\":\"BLOCK\",\"category\":\"testing\",\"location\":\"example.txt:1\",\"evidence\":\"Missing regression coverage.\",\"status\":\"open\"}]
+FINDINGS_JSON_END
 "
 run_and_capture_rc critic_rc run_critic
 assert_eq "1" "$critic_rc" "request-changes critic result"
 assert_eq "review" "$CRITIC_FAILURE_KIND" "request-changes failure kind"
 pass "critic returns actionable review failure"
+CRITIC_FINDINGS_LEDGER='[]' # independent scenario: new task ledger (begin_task)
 
 export FAKE_COPILOT_OUTPUT=$'VERDICT: APPROVE\n- Nonce omitted.\n'
 run_and_capture_rc critic_rc run_critic

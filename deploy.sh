@@ -117,6 +117,8 @@ HEADER
     LOOP_CRITIC_MODEL=$(jq -r --arg w "$WORKER_ID" '.[$w].loop.criticModel // ""' "$REPOS_JSON")
     LOOP_VERIFY=$(jq -r --arg w "$WORKER_ID" '.[$w].loop.verify // "off"' "$REPOS_JSON")
     LOOP_MAX_RETRIES=$(jq -r --arg w "$WORKER_ID" '.[$w].loop.maxRetries // 2' "$REPOS_JSON")
+    local LOOP_MAX_RETRIES_MANUAL
+    LOOP_MAX_RETRIES_MANUAL=$(jq -r --arg w "$WORKER_ID" '.[$w].loop.maxRetriesManual // 4' "$REPOS_JSON")
     LOOP_MAX_PRS_PER_DAY=$(jq -r --arg w "$WORKER_ID" '.[$w].loop.maxPrsPerDay // 0' "$REPOS_JSON")
     LOOP_MAX_OPEN_AUTO_ISSUES=$(jq -r --arg w "$WORKER_ID" '.[$w].loop.maxOpenAutoIssues // 3' "$REPOS_JSON")
     LOOP_GOAL_FILE=$(jq -r --arg w "$WORKER_ID" '.[$w].loop.goalFile // "auto"' "$REPOS_JSON")
@@ -176,6 +178,7 @@ HEADER
       - $(yaml_quote "LOOP_CRITIC_MODEL=${LOOP_CRITIC_MODEL}")
       - $(yaml_quote "LOOP_VERIFY=${LOOP_VERIFY}")
       - $(yaml_quote "LOOP_MAX_RETRIES=${LOOP_MAX_RETRIES}")
+      - $(yaml_quote "LOOP_MAX_RETRIES_MANUAL=${LOOP_MAX_RETRIES_MANUAL}")
       - $(yaml_quote "LOOP_MAX_PRS_PER_DAY=${LOOP_MAX_PRS_PER_DAY}")
       - $(yaml_quote "LOOP_MAX_OPEN_AUTO_ISSUES=${LOOP_MAX_OPEN_AUTO_ISSUES}")
       - $(yaml_quote "LOOP_GOAL_FILE=${LOOP_GOAL_FILE}")

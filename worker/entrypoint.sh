@@ -100,8 +100,8 @@ printf "    COPILOT_MODEL : %s\n" "${COPILOT_MODEL:-<default>}"
 printf "    COPILOT_EFFORT : %s\n" "${COPILOT_EFFORT:-<default>}"
 printf "    COPILOT_CONTEXT : %s\n" "${COPILOT_CONTEXT:-<default>}"
 printf "    LOOP          : autonomous=%s critic=%s verify=%s\n" "${LOOP_AUTONOMOUS:-false}" "${LOOP_CRITIC:-false}" "${LOOP_VERIFY:-off}"
-printf "    LOOP POLICY   : implementer=%s scope=%s rubric=%s retries=%s prs/day=%s auto-issues=%s\n" \
-  "${LOOP_IMPLEMENTER:-plain}" "${LOOP_WORK_SCOPE:-all}" "${LOOP_CRITIC_RUBRIC:-auto}" "${LOOP_MAX_RETRIES:-2}" \
+printf "    LOOP POLICY   : implementer=%s scope=%s rubric=%s retries=%s manual-retries=%s prs/day=%s auto-issues=%s\n" \
+  "${LOOP_IMPLEMENTER:-plain}" "${LOOP_WORK_SCOPE:-all}" "${LOOP_CRITIC_RUBRIC:-auto}" "${LOOP_MAX_RETRIES:-2}" "${LOOP_MAX_RETRIES_MANUAL:-4}" \
   "${LOOP_MAX_PRS_PER_DAY:-0}" "${LOOP_MAX_OPEN_AUTO_ISSUES:-3}"
 
 # ---------------------------------------------------------------------------
@@ -231,6 +231,7 @@ write_workspace_export() {
   write_workspace_export LOOP_CRITIC_MODEL "${LOOP_CRITIC_MODEL:-}"
   write_workspace_export LOOP_VERIFY "${LOOP_VERIFY:-off}"
   write_workspace_export LOOP_MAX_RETRIES "${LOOP_MAX_RETRIES:-2}"
+  write_workspace_export LOOP_MAX_RETRIES_MANUAL "${LOOP_MAX_RETRIES_MANUAL:-4}"
   write_workspace_export LOOP_MAX_PRS_PER_DAY "${LOOP_MAX_PRS_PER_DAY:-0}"
   write_workspace_export LOOP_MAX_OPEN_AUTO_ISSUES "${LOOP_MAX_OPEN_AUTO_ISSUES:-3}"
   write_workspace_export LOOP_GOAL_FILE "${LOOP_GOAL_FILE:-auto}"

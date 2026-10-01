@@ -59,7 +59,7 @@ LOOP_CRITIC=true LOOP_CRITIC_MODEL=fixture-model LOOP_MAX_REVIEW_BYTES=1048576
 COPILOT_PAT=fixture CRITIC_INPUT_NONCE_OVERRIDE=fixture-nonce
 CURRENT_ISSUE_CONTEXT='Correct a comment only; preserve authorization.'
 FINAL_PR_BODY='Comment correction only. Authorization unchanged.'
-export FAKE_COPILOT_OUTPUT=$'VERDICT: REQUEST_CHANGES\nINPUT_NONCE: fixture-nonce\n- Authorization bypass is in the complete input.'
+export FAKE_COPILOT_OUTPUT=$'VERDICT: REQUEST_CHANGES\nINPUT_NONCE: fixture-nonce\nFINDINGS_JSON_BEGIN\n[{"id":"F1","severity":"BLOCK","category":"correctness","location":"fixture:1","evidence":"Synthetic blocking defect.","status":"open"}]\nFINDINGS_JSON_END\n- Authorization bypass is in the complete input.'
 run_agent_copilot() {
   local input
   input=$(find "$WORKSPACE_DIR" -maxdepth 1 -name '.critic-input.*.md')
@@ -68,10 +68,11 @@ run_agent_copilot() {
 }
 reject run_critic
 [[ "$CRITIC_FAILURE_KIND" == review && "$REVIEWED_HEAD" == "$head" ]] || fail 'complete negative review classification'
+CRITIC_FINDINGS_LEDGER='[]' # independent scenario: new task ledger (begin_task)
 grep -qF '+function authorize(admin) { return true; }' "$TMP/delivered.md"
 grep -qF 'Preserve strict authorization.' "$TMP/delivered.md"
 # A fake APPROVE tests transport/binding, never actual model judgment.
-FAKE_COPILOT_OUTPUT=$'VERDICT: APPROVE\nINPUT_NONCE: fixture-nonce\n- Synthetic transport only.'
+FAKE_COPILOT_OUTPUT=$'VERDICT: APPROVE\nINPUT_NONCE: fixture-nonce\nFINDINGS_JSON_BEGIN\n[]\nFINDINGS_JSON_END\n- Synthetic transport only.'
 run_critic
 command git init -q --bare "$TMP/receiver.git"
 git push "$TMP/receiver.git" HEAD:refs/heads/feature >/dev/null 2>&1
@@ -328,7 +329,7 @@ run_agent_copilot() {
   bash "$ROOT/tests/critic-complete-input.test.sh" --emit "$input"
   command git update-index --assume-unchanged auth.js
 }
-FAKE_COPILOT_OUTPUT=$'VERDICT: REQUEST_CHANGES\nINPUT_NONCE: fixture-nonce\n- Synthetic negative.'
+FAKE_COPILOT_OUTPUT=$'VERDICT: REQUEST_CHANGES\nINPUT_NONCE: fixture-nonce\nFINDINGS_JSON_BEGIN\n[{"id":"F1","severity":"BLOCK","category":"correctness","location":"fixture:1","evidence":"Synthetic blocking defect.","status":"open"}]\nFINDINGS_JSON_END\n- Synthetic negative.'
 reject run_critic
 [[ "$CRITIC_FAILURE_KIND" == infrastructure ]] || fail 'metadata drift allowed review retry'
 restore_fixture

@@ -564,6 +564,8 @@ A task explicitly requesting draft remains `waiting-human`, not failed; its WIP 
 A closed/merged pending PR releases only its owned coordination refs without attempting a draft mutation.
 
 `maxRetries` is one shared code-correction allowance, not a fresh allowance per nested gate.
+Publisher-verified manual issues use `maxRetriesManual` (default 4) instead; it does not extend `maxTaskSeconds` and never restarts a task.
+When the allowance is exhausted the issue blocks with the open BLOCK findings; the branch is not pushed.
 `maxTaskSeconds` defaults to 3600 and covers initial implementation, verification, review and corrections.
 Pending remote checks keep at least `LOOP_CHECK_WAIT_SECONDS` (default 3600) after the draft is published; no model or repository code runs while waiting.
 
@@ -585,7 +587,7 @@ Never put it in the checkout or let an issue select a publisher command.
 The fixed interface is:
 
 - `implementer.md`: bounded supplemental instructions for one implementer.
-- `reviewer.md`: bounded supplemental reviewer requirements.
+- `reviewer.md`: bounded supplemental reviewer requirements. Keep its verdict vocabulary aligned with the parser (`APPROVE`/`REQUEST_CHANGES` plus the findings block and category list); a profile that asks for other verdict words makes every review fail closed.
 - `review-context.txt`: one relative trusted-base rule path per line; blank/comment lines ignored.
 - `review-assets.txt`: optional relative image-deliverable directories, one per line with a trailing slash.
   Blank/comment lines are ignored; absent file means no image-link rewriting.
