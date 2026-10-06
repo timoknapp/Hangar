@@ -57,8 +57,8 @@ RUN curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
 # Copilot CLI + Squad CLI
 # Pinned versions used at build time. Override with --build-arg to upgrade.
 # The container also self-updates on start when AUTO_UPDATE_CLI=true (opt-in).
-ARG COPILOT_CLI_VERSION=1.0.70
-ARG SQUAD_CLI_VERSION=0.11.0
+ARG COPILOT_CLI_VERSION=1.0.92
+ARG SQUAD_CLI_VERSION=1.0.0
 ARG CACHE_BUST=1
 RUN echo "cache-bust=${CACHE_BUST}" \
   && npm install -g "@github/copilot@${COPILOT_CLI_VERSION}" "@bradygaster/squad-cli@${SQUAD_CLI_VERSION}"
