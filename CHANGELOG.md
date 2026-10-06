@@ -28,7 +28,8 @@ container images are distributed at this time.
 - Scoped `maxPrsPerDay` to autonomous `loop:auto` work. Human-created `squad` issues and revisions
   now bypass the autonomous budget and manual issues are selected before generated work.
 - Pinned `@bradygaster/squad-cli` 1.0.0 (stable; no breaking command/API changes since 0.13.1)
-  and `@github/copilot` 1.0.92 in the interactive and worker images.
+  in the interactive and worker images. `@github/copilot` stays at 1.0.70: with 1.0.92 the
+  critic's full-input delivery proof fails closed (missing model/interaction evidence).
 - Split interactive SSH, ttyd, and preview bind addresses so operators can expose only the
   service they explicitly need.
 - Existing operators who set `INTERACTIVE_BIND_ADDRESS` must replace it with the corresponding
