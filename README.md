@@ -148,7 +148,7 @@ target repository. On a machine with Node.js 22.5+ and npm 10+, run:
 
 ```bash
 cd /path/to/your-target-repository
-npx @bradygaster/squad-cli@0.11.0 init --preset default
+npx @bradygaster/squad-cli@1.0.0 init --preset default
 git status --short
 ```
 
