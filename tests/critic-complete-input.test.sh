@@ -24,6 +24,7 @@ def emit(t,**data):
 def cli_mask(text):
     import re
     text=re.sub(r"\b[Bb]earer[ \t]+[^\s'\";]+",'******',text)
+    text=re.sub(r'\b[Pp][Aa][Ss][Ss][Ww][Oo][Rr][Dd]=\S+','******',text)
     return re.sub(r'gh[pousr]_[A-Za-z0-9]{20,}','******',text)
 def read(start,end,tool='view',content=None,**extra):
     call=f'call-{len(events)}'
@@ -234,6 +235,26 @@ original_diff=$(git diff --no-ext-diff --no-textconv --full-index "$(trusted_bas
   [[ "$CRITIC_FAILURE_KIND" == incomplete && "$CRITIC_FEEDBACK" == *'content mismatch lines'* ]] || fail 'control did not reproduce #407'
 )
 echo 'PASS: CLI-masked Bearer line is escaped, delivered exactly and bound to the original diff (control reproduces #407)'
+# comool #412: unchanged Bruno context line `--env-var "password=$PASSWORD"`
+# is masked by the real CLI filter. Escaping the keyword keeps delivery exact.
+cat > e2e-bruno.sh <<'SH'
+npx bru run \
+  --env-var "password=$PASSWORD" \
+  --bail
+SH
+git add e2e-bruno.sh && git commit -qm 'bruno password env fixture'
+CRITIC_TEST_MODE=cli-mask LOOP_COPILOT_SECRET_FILTER_MODULE=off
+run_critic || fail "CLI-masked password line not delivered: $CRITIC_FEEDBACK"
+grep -Fq -- '--env-var "⟦password⟧=$⟦PASSWORD⟧"' "$TMP/input.md" || fail 'password not escaped in review input'
+if grep -Fq -- '"password=$PASSWORD"' "$TMP/input.md"; then fail 'raw maskable password line in review input'; fi
+grep -Fq -- '--env-var "password=$PASSWORD"' <(critic_unescape_masked < "$TMP/input.md") || fail 'password escaping not reversible'
+[[ "$(printf 'DB_PASSWORD=x passwordless\n' | critic_escape_masked)" == 'DB_PASSWORD=x passwordless' ]] || fail 'escaping touched non-word occurrences'
+(
+  critic_escape_masked() { cat; }
+  if run_critic; then fail 'unescaped password line proven complete'; fi
+  [[ "$CRITIC_FAILURE_KIND" == incomplete && "$CRITIC_FEEDBACK" == *'content mismatch lines'* ]] || fail 'control did not reproduce #412'
+)
+echo 'PASS: CLI-masked password assignment is escaped, delivered exactly and reversible (control reproduces #412)'
 # Pre-existing marker characters would make the mapping ambiguous: no model call.
 (
   run_agent_copilot() { fail 'ambiguous marker input called model'; }
@@ -247,7 +268,7 @@ echo 'PASS: input already containing masking markers fails closed before the mod
 cat > "$TMP/fake-filter.js" <<'JS'
 module.exports = {
   secretFilterCreate: () => 1,
-  secretFilterFilter: (h, s) => ({changed: /\b[Bb]earer[ \t]+[^\s'";]+|gh[pousr]_[A-Za-z0-9]{20,}/.test(s), value: s}),
+  secretFilterFilter: (h, s) => ({changed: /\b[Bb]earer[ \t]+[^\s'";]+|\bpassword=\S|gh[pousr]_[A-Za-z0-9]{20,}/i.test(s), value: s}),
 };
 JS
 LOOP_COPILOT_SECRET_FILTER_MODULE="$TMP/fake-filter.js"
