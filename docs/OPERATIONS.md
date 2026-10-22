@@ -480,6 +480,14 @@ A rejecting part stops the review, names its part number, and keeps its findings
 A single part that alone exceeds `LOOP_MAX_REVIEW_BYTES` still blocks without a model call.
 Publication binds the ordered list of approved part hashes.
 
+### Review input the CLI masks
+
+The Copilot CLI hides secret-looking text (for example `Authorization: Bearer <value>` fixtures) from every model, so the critic cannot be shown those lines.
+After the reversible escaping has done what it can, any remaining masked line no longer fails the attempt.
+All other gates must still pass; the change is published as a draft whose body names the unreviewed review-input line numbers, the issue gets `squad:needs-decision`, and the worker comment asks a human to review exactly those lines.
+Such a draft is never promoted to Ready automatically.
+Line numbers are reported, never the masked text.
+
 ---
 
 > Back to [README](../README.md) · [Install](INSTALL.md) · [Architecture](ARCHITECTURE.md)

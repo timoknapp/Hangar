@@ -133,6 +133,7 @@ REVIEW_BODY_HASH=""
 REVIEW_DIFF_HASH=""
 FINAL_PR_BODY=""
 TASK_KEEP_DRAFT=false
+TASK_MASKED_REVIEW=""
 CURRENT_CLAIM_OID=""
 CURRENT_WIP_REF=""
 WIP_CREATED=false
@@ -829,7 +830,7 @@ begin_task() {
   CORRECTIONS_USED=0 CORRECTION_BLOCK=""
   CRITIC_FINDINGS_LEDGER="[]" REVIEW_SUGGESTIONS_MD=""
   BASE_VERIFY_OK=false
-  VERIFIED_HEAD="" REVIEWED_HEAD="" REVIEW_BODY_HASH="" FINAL_PR_BODY=""
+  VERIFIED_HEAD="" REVIEWED_HEAD="" REVIEW_BODY_HASH="" FINAL_PR_BODY="" TASK_MASKED_REVIEW=""
   TASK_BASE_SHA="" TASK_BRANCH="" TASK_START_HEAD=""
   REVISION_BASE_MODE="" REVISION_BASE_CONFLICTS="" REVISION_MERGE_COMMIT=""
   TASK_CI_ROUNDS=0 BASE_DRIFT_REASON=""
@@ -2538,7 +2539,8 @@ save_pending_publication() {
     --argjson checkPolicy "$check_policy" \
     --argjson deadline "$deadline" --argjson keepDraft "$TASK_KEEP_DRAFT" --argjson ciRounds "$TASK_CI_ROUNDS" \
     --arg rKind "$TASK_KIND" --arg rStarted "$TASK_STARTED_AT" --arg rCredits "$TASK_CREDITS" \
-    '{attempt:{kind:$rKind,startedAt:$rStarted,credits:$rCredits},issue:$issue,branch:$branch,url:$url,base:$base,head:$head,verified:$verified,reviewed:$reviewed,
+    --arg maskedLines "$TASK_MASKED_REVIEW" \
+    '{attempt:{kind:$rKind,startedAt:$rStarted,credits:$rCredits},maskedLines:$maskedLines,issue:$issue,branch:$branch,url:$url,base:$base,head:$head,verified:$verified,reviewed:$reviewed,
       inputHash:$inputHash,diffHash:$diffHash,body:$body,bodyHash:$bodyHash,contractHash:$contractHash,
       claim:$claim,claimOid:$claimOid,wip:$wip,manualIntake:$manualIntake,deadline:$deadline,keepDraft:$keepDraft,
       checkPolicy:$checkPolicy,ciRounds:$ciRounds}' >"$tmp" || return 1
@@ -2891,12 +2893,18 @@ resume_pending_publication() {
       reason="Exact-head local verification/review/body evidence missing"
     elif [[ "$(jq -r .keepDraft <<<"$pending")" == true ]]; then
       ensure_pr_is_draft "$branch" || return 0
+      local masked wait_label=squad:review-pending note="stays draft as the task requires and awaits human review."
+      masked=$(jq -r '.maskedLines // ""' <<<"$pending")
+      if [[ -n "$masked" ]]; then
+        wait_label=squad:needs-decision
+        note="stays draft: the independent review could not be shown review-input lines ${masked} because the Copilot CLI masks them. Everything else passed. Please review those lines in the PR yourself, then mark it ready or request changes."
+      fi
       gh issue edit "$issue" --repo "$REPO_SLUG" --remove-label squad:processing --remove-label squad:revision \
-        --remove-label squad:done --add-label squad:review-pending >/dev/null || return 0
+        --remove-label squad:done --add-label "$wait_label" >/dev/null || return 0
       release_issue_claim || return 0
-      gh issue comment "$issue" --repo "$REPO_SLUG" --body "📝 Worker ${WORKER_ID}: ${url} stays draft as the task requires and awaits human review.
+      gh issue comment "$issue" --repo "$REPO_SLUG" --body "📝 Worker ${WORKER_ID}: ${url} ${note}
 
-$(receipt_marker draft)" >/dev/null 2>&1 || log_error "Could not record the draft receipt for #${issue}"
+$(receipt_marker draft "$([[ -n "$masked" ]] && echo decision)")" >/dev/null 2>&1 || log_error "Could not record the draft receipt for #${issue}"
       archive_pending waiting-human "$issue" || return 0
       CURRENT_ISSUE="" CURRENT_ISSUE_CONTEXT="" TASK_DEADLINE=0
       log "Task-mandated draft awaits human review: ${url}"
@@ -3280,6 +3288,19 @@ run_quality_gates() {
         return 0
       fi
     fi
+    if [[ "$CRITIC_FAILURE_KIND" == masked ]]; then
+      # Everything else is proven; only lines the CLI hides from any model remain.
+      # Publish a draft that never becomes Ready and ask a human for those lines.
+      TASK_MASKED_REVIEW="$CRITIC_MASKED_LINES" TASK_KEEP_DRAFT=true
+      FINAL_PR_BODY="${FINAL_PR_BODY}
+
+> [!WARNING]
+> Not independently reviewed: the Copilot CLI masks review-input lines ${CRITIC_MASKED_LINES} (for example real-looking credentials), so no model can be shown them. A human must review those lines; this draft is never promoted automatically."
+      REVIEWED_HEAD=$(git rev-parse HEAD) || return 1
+      REVIEW_BODY_HASH=$(printf '%s' "$FINAL_PR_BODY" | sha256sum | cut -d' ' -f1)
+      GATE_NOTE="Masked review input; draft for human review"
+      return 0
+    fi
     if [[ "$CRITIC_FAILURE_KIND" != review ]]; then
       GATE_NOTE="${CRITIC_FEEDBACK:-Independent review blocked}"
       return 1
@@ -3372,6 +3393,7 @@ ensure_loop_labels() {
     --description "Request another pass on the existing worker PR" --force >/dev/null 2>&1 || return 1
   gh label create "squad:failed" --repo "$REPO_SLUG" --color b60205 --description "Blocked; explicit retry required" --force >/dev/null 2>&1 || return 1
   gh label create "squad:review-pending" --repo "$REPO_SLUG" --color fbca04 --description "Draft/checks pending; not complete" --force >/dev/null 2>&1 || return 1
+  gh label create "squad:needs-decision" --repo "$REPO_SLUG" --color d93f0b --description "Waiting for a human decision; see the latest worker comment" --force >/dev/null 2>&1 || return 1
   if [[ "${LOOP_AUTONOMOUS:-false}" == "true" ]]; then
     gh label create "loop:auto" --repo "$REPO_SLUG" --color "c5def5" \
       --description "Auto-generated by the autonomous loop" --force >/dev/null 2>&1 || return 1
