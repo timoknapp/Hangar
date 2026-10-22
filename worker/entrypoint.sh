@@ -226,7 +226,6 @@ write_workspace_export() {
   write_workspace_export COPILOT_MODEL "${COPILOT_MODEL:-}"
   write_workspace_export COPILOT_EFFORT "${COPILOT_EFFORT:-}"
   write_workspace_export COPILOT_CONTEXT "${COPILOT_CONTEXT:-}"
-  write_workspace_export HANGAR_COPILOT_CLI_VERSION "${HANGAR_COPILOT_CLI_VERSION:-}"
   write_workspace_export AUTO_UPDATE_CLI "${AUTO_UPDATE_CLI:-false}"
   write_workspace_export LOOP_AUTONOMOUS "${LOOP_AUTONOMOUS:-false}"
   write_workspace_export LOOP_CRITIC "${LOOP_CRITIC:-false}"

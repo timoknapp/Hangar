@@ -10,12 +10,16 @@ PREFLIGHT_MODELS_OK_UNTIL=0
 PREFLIGHT_REASON=""
 PREFLIGHT_LAST_LOGGED=""
 
+HANGAR_CLI_PIN_FILE="${HANGAR_CLI_PIN_FILE:-/etc/hangar-copilot-cli-version}"
+
+# Images without a pin file (older builds) skip this check rather than guess.
 preflight_cli_version() {
-  [[ -n "${HANGAR_COPILOT_CLI_VERSION:-}" && "${AUTO_UPDATE_CLI:-false}" != true ]] || return 0
-  local actual
+  [[ "${AUTO_UPDATE_CLI:-false}" != true && -r "$HANGAR_CLI_PIN_FILE" ]] || return 0
+  local actual pinned
+  pinned=$(head -1 "$HANGAR_CLI_PIN_FILE" | tr -d '[:space:]')
   actual=$(copilot --version 2>/dev/null | sed -nE 's/^GitHub Copilot CLI ([0-9]+(\.[0-9]+)*)\.?$/\1/p' | head -1)
-  [[ "$actual" == "$HANGAR_COPILOT_CLI_VERSION" ]] && return 0
-  PREFLIGHT_REASON="Copilot CLI ${actual:-unreadable} differs from pinned ${HANGAR_COPILOT_CLI_VERSION}"
+  [[ -n "$pinned" && "$actual" == "$pinned" ]] && return 0
+  PREFLIGHT_REASON="Copilot CLI ${actual:-unreadable} differs from pinned ${pinned:-unreadable}"
   return 1
 }
 

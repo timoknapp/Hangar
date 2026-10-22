@@ -124,7 +124,7 @@ fetch_task_base() { return "$PF_FETCH"; }
 copilot() { printf '%s\n' "$PF_VERSION"; }
 run_agent_copilot() { echo x >>"$TMP/probes"; [[ "$PF_MODEL" == ok ]] && echo HANGAR_PREFLIGHT_OK || echo 'model not available'; }
 probes() { wc -l <"$TMP/probes" 2>/dev/null || echo 0; }
-HANGAR_COPILOT_CLI_VERSION=1.0.70 AUTO_UPDATE_CLI=false COPILOT_MODEL=impl LOOP_CRITIC=true LOOP_CRITIC_MODEL=critic
+printf '1.0.70\n' >"$TMP/cli-pin"; HANGAR_CLI_PIN_FILE="$TMP/cli-pin" AUTO_UPDATE_CLI=false COPILOT_MODEL=impl LOOP_CRITIC=true LOOP_CRITIC_MODEL=critic
 worker_preflight || fail "healthy worker refused: $PREFLIGHT_REASON"
 [[ "$(probes)" == 2 ]] || fail "implementer and critic model must both be probed ($(probes))"
 worker_preflight || fail 'cached healthy probe refused'
@@ -142,6 +142,9 @@ PF_CLEAN=1; check_unhealthy 'dirty workspace'; PF_CLEAN=0
 PF_VERSION='GitHub Copilot CLI 1.0.92.'; check_unhealthy 'CLI drift'
 AUTO_UPDATE_CLI=true; worker_preflight || fail 'opted-in auto update must not be blocked by the pin'; AUTO_UPDATE_CLI=false
 PF_VERSION=''; check_unhealthy 'unreadable CLI version'; PF_VERSION='GitHub Copilot CLI 1.0.70.'
+: >"$TMP/cli-pin"; check_unhealthy 'empty pin file'; printf '1.0.70\n' >"$TMP/cli-pin"
+HANGAR_CLI_PIN_FILE="$TMP/absent"; PF_VERSION='GitHub Copilot CLI 9.9.9.'; worker_preflight || fail 'image without pin file must not be blocked'
+HANGAR_CLI_PIN_FILE="$TMP/cli-pin"; PF_VERSION='GitHub Copilot CLI 1.0.70.'
 PREFLIGHT_MODELS_OK_UNTIL=0 PF_MODEL=gone; check_unhealthy 'unavailable model'
 [[ "$PREFLIGHT_REASON" == *"impl"* ]] || fail 'reason must name the model'
 PF_MODEL=ok; worker_preflight || fail 'recovered worker refused'

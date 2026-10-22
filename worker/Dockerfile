@@ -58,12 +58,13 @@ RUN curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
 # Pinned versions used at build time. Override with --build-arg to upgrade.
 # The container also self-updates on start when AUTO_UPDATE_CLI=true (opt-in).
 ARG COPILOT_CLI_VERSION=1.0.70
-# The worker preflight refuses work when the installed CLI differs from this pin.
-ENV HANGAR_COPILOT_CLI_VERSION=${COPILOT_CLI_VERSION}
 ARG SQUAD_CLI_VERSION=1.0.0
 ARG CACHE_BUST=1
 RUN echo "cache-bust=${CACHE_BUST}" \
-  && npm install -g "@github/copilot@${COPILOT_CLI_VERSION}" "@bradygaster/squad-cli@${SQUAD_CLI_VERSION}"
+  && npm install -g "@github/copilot@${COPILOT_CLI_VERSION}" "@bradygaster/squad-cli@${SQUAD_CLI_VERSION}" \
+  && printf '%s\n' "${COPILOT_CLI_VERSION}" > /etc/hangar-copilot-cli-version
+# The pin is a file, not ENV: changing the container environment would alter
+# every existing worker definition. The worker preflight compares against it.
 
 # Prevent same-user shell/subagent/MCP processes from reading the parent
 # Copilot credential through /proc/<pid>/environ.
