@@ -8,6 +8,7 @@ TASK_STAGE="${TASK_STAGE:-admission}"
 TASK_KIND="${TASK_KIND:-issue}"
 TASK_STARTED_AT="${TASK_STARTED_AT:-0}"
 TASK_CREDITS="${TASK_CREDITS:-0}"
+TASK_RETRY="${TASK_RETRY:-false}"
 
 receipt_begin() {
   TASK_KIND="$1" TASK_STAGE=admission TASK_STARTED_AT=$(date +%s) TASK_CREDITS=0
@@ -49,7 +50,8 @@ receipt_marker() {
   if [[ "$TASK_STARTED_AT" =~ ^[1-9][0-9]*$ ]]; then seconds=$(( $(date +%s) - TASK_STARTED_AT )); fi
   json=$(jq -cn --arg worker "$WORKER_ID" --arg kind "$TASK_KIND" --arg stage "$TASK_STAGE" \
     --arg outcome "$outcome" --arg class "$class" --arg seconds "$seconds" --arg credits "$TASK_CREDITS" \
-    '{v:1,worker:$worker,kind:$kind,stage:$stage,outcome:$outcome,class:(if $class == "" then null else $class end),
+    --argjson retry "$([[ "$TASK_RETRY" == true ]] && echo true || echo false)" \
+    '{v:1,worker:$worker,kind:$kind,stage:$stage,outcome:$outcome,class:(if $class == "" then null else $class end),autoRetry:$retry,
       seconds:($seconds|tonumber? // "unknown"),implementerCredits:($credits|tonumber? // "unknown")}') || return 0
   [[ "$json" != *"--"* ]] || return 0
   printf '<!-- hangar-receipt %s -->\n' "$json"

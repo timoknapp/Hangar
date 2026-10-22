@@ -452,6 +452,7 @@ ok 'malformed/manual-with-WIP receipts stay busy; closed manual publication neve
   ensure_token() { return 0; }
   ensure_loop_labels() { return 0; }
   agent_startup_canary() { return 0; }
+  worker_preflight() { return 0; }
   resume_pending_publication() { return 1; }
   find_manual_issue() { echo "$HUMAN"; }
   find_revision_issue() { fail 'manual priority reached nonmanual revisions'; }
@@ -478,6 +479,7 @@ for dispatch in issue revision; do
     ensure_token() { return 0; }
     ensure_loop_labels() { return 0; }
     agent_startup_canary() { return 0; }
+    worker_preflight() { return 0; }
     resume_pending_publication() { return 1; }
     find_next_issue() {
       if [[ "$dispatch" == revision ]]; then jq '.labels += [{name:"squad:revision"}]' <<<"$HUMAN"; else echo "$HUMAN"; fi

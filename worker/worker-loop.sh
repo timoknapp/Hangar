@@ -36,6 +36,10 @@ HANGAR_LIB_DIR="${HANGAR_LIB_DIR:-$(dirname "${BASH_SOURCE[0]}")/lib}"
 source "${HANGAR_LIB_DIR}/receipt.sh"
 # shellcheck source=worker/lib/queue.sh
 source "${HANGAR_LIB_DIR}/queue.sh"
+# shellcheck source=worker/lib/retry.sh
+source "${HANGAR_LIB_DIR}/retry.sh"
+# shellcheck source=worker/lib/preflight.sh
+source "${HANGAR_LIB_DIR}/preflight.sh"
 
 # Trusted object interpretation never honors replacements or cached ancestry.
 # Ignore hooks and reset helpers before using the publisher-only credential helper.
@@ -2947,12 +2951,20 @@ cleanup_issue() {
     log_error "Terminal state write failed; claim retained for explicit recovery"
     return 1
   fi
-  local outcome=failed
+  local outcome=failed next="Local work retained; explicitly repair/recover and re-add squad:revision to retry." retry_marker=""
   [[ "$(receipt_class "$reason")" != decision ]] || outcome=no-change
-  gh issue comment "$issue_num" --repo "$REPO_SLUG" \
-    --body "❌ Worker ${WORKER_ID} blocked: ${reason}. No completion claimed. Local work retained; explicitly repair/recover and re-add squad:revision to retry.
+  if retryable_failure "$reason" && auto_retry_available "$issue_num"; then
+    TASK_RETRY=true retry_marker="$AUTO_RETRY_MARKER"
+    next="Transient infrastructure failure: one automatic retry follows in about $((LOOP_RETRY_DELAY_SECONDS / 60)) minutes; local work is archived, never discarded."
+  fi
+  if gh issue comment "$issue_num" --repo "$REPO_SLUG" \
+    --body "❌ Worker ${WORKER_ID} blocked: ${reason}. No completion claimed. ${next}
 
-$(receipt_marker "$outcome" "$(receipt_class "$reason")")" >/dev/null 2>&1 || true
+$(receipt_marker "$outcome" "$(receipt_class "$reason")")
+${retry_marker}" >/dev/null 2>&1 && [[ -n "$retry_marker" ]]; then
+    write_auto_retry "$issue_num" || log_error "Auto-retry for #${issue_num} could not be scheduled; explicit retry required"
+  fi
+  TASK_RETRY=false
   release_issue_claim || return 1
   CURRENT_ISSUE="" CURRENT_ISSUE_CONTEXT=""
 }
@@ -4185,6 +4197,7 @@ main() {
       sleep "$POLL_INTERVAL"; continue
     fi
     TASK_DEADLINE=0
+    process_due_retries
 
     # Priority applies only on a free worker; pending/current work above is never interrupted.
     local issue_json=""
@@ -4206,6 +4219,11 @@ main() {
       fi
       sleep "$POLL_INTERVAL"
       continue
+    fi
+
+    # An unhealthy worker claims nothing; the issue stays untouched for others.
+    if ! worker_preflight; then
+      sleep "$POLL_INTERVAL"; continue
     fi
 
     if is_autonomous_issue "$issue_json"; then

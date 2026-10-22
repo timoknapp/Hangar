@@ -443,6 +443,23 @@ python3 tools/factory-metrics.py your-org/your-repo --since 2026-01-01
 Issues from before receipts existed are counted from label history and reported as legacy.
 See [ADR 0001](adr/0001-factory-direction.md) for how the metric gates later changes.
 
+### Worker preflight and automatic retry
+
+Before every claim a worker checks its own health and claims nothing while unhealthy:
+
+- free disk space in the workspace (`LOOP_MIN_FREE_MB`, default 2048),
+- clean workspace, safe Git metadata, repairable shared directory modes and a working `git fetch` of the default branch,
+- the installed Copilot CLI equals the pinned image version (`HANGAR_COPILOT_CLI_VERSION`), unless `AUTO_UPDATE_CLI=true`,
+- implementer and critic models answer a minimal read-only probe (cached for `LOOP_MODEL_PROBE_TTL` seconds, default 3600).
+
+An unhealthy worker logs each distinct reason once and leaves the issue untouched for other workers.
+
+A transient infrastructure failure (base preparation or fetch, CLI crash or timeout, unusable verification launcher, critic process failure, PR/check API failure, interruption) gets exactly one automatic retry per issue.
+The blocked comment says so and carries `<!-- hangar-auto-retry -->`; that marker in GitHub is the durable once-per-issue guard, and unreadable comment history means no retry.
+After `LOOP_RETRY_DELAY_SECONDS` (default 600) a worker removes `squad:failed`; work with an already pushed branch continues as `squad:revision`.
+Closing the issue, removing `squad` or retrying it by hand cancels the pending automatic retry.
+Deterministic failures (delivery proof for oversized or masked review input, drift, policy, scope, code, review, decision stops) never retry automatically.
+
 ---
 
 > Back to [README](../README.md) · [Install](INSTALL.md) · [Architecture](ARCHITECTURE.md)
