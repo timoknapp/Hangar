@@ -64,7 +64,7 @@ for worker in $workers; do
   fi
   docker exec "$container" test -x /usr/local/bin/credential-guard \
     || fail "${worker} credential guard is missing"
-  docker exec "$container" grep -q '^create_critic_input_file()' /home/copilot/worker-loop.sh \
+  docker exec "$container" grep -q '^create_critic_input_file()' /home/copilot/lib/critic.sh \
     || fail "${worker} file-based critic input is missing"
 
   if [[ "$expected_implementer" == "squad" ]]; then

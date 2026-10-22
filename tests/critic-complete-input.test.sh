@@ -103,6 +103,8 @@ sed -i 's/auhtorization/authorization/g' comments.txt
 git commit -qam 'correct spelling only'
 TASK_BRANCH=feature
 LOOP_CRITIC=true LOOP_CRITIC_MODEL=fixture-model LOOP_MAX_REVIEW_BYTES=1048576
+# One-session semantics; splitting large reviews is covered by critic-split.test.sh.
+LOOP_CRITIC_SPLIT_LINES=1000000
 COPILOT_PAT=fixture CRITIC_INPUT_NONCE_OVERRIDE=fixture-nonce
 CURRENT_ISSUE_CONTEXT='Correct documentation spelling; preserve strict authorization.'
 FINAL_PR_BODY='Documentation-only correction. No test execution claim.'

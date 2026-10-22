@@ -471,6 +471,15 @@ On an idle worker, at most every `LOOP_REAP_INTERVAL` seconds (default 3600), th
 Because the worker holds no work, such a claim is an orphan of a crash: it is blocked as an interrupted attempt, which makes it eligible for the automatic retry.
 Claims of other workers are never touched, and the reaper never deletes branches or work.
 
+### Split critic review for large changes
+
+When a change exceeds `LOOP_CRITIC_SPLIT_LINES` diff lines (default 2000), the independent review runs as several parts.
+Changed files are grouped whole and in order; binary files only add a short blob-ID entry.
+Each part is a fresh critic session with its own nonce and its own complete-delivery proof, and every part must approve.
+A rejecting part stops the review, names its part number, and keeps its findings in the shared ledger for the correction session.
+A single part that alone exceeds `LOOP_MAX_REVIEW_BYTES` still blocks without a model call.
+Publication binds the ordered list of approved part hashes.
+
 ---
 
 > Back to [README](../README.md) · [Install](INSTALL.md) · [Architecture](ARCHITECTURE.md)
