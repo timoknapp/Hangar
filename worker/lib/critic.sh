@@ -495,7 +495,7 @@ run_critic() {
   masked_lines=$(critic_masking_preflight "$critic_input") || preflight_exit=$?
   if (( preflight_exit != 0 )); then
     rm -f "$critic_input"
-    CRITIC_FAILURE_KIND=incomplete
+    CRITIC_FAILURE_KIND=masked CRITIC_MASKED_LINES="${masked_lines:-unknown}"
     CRITIC_FEEDBACK="Review input still contains text the Copilot CLI masks (lines: ${masked_lines:-unknown}), e.g. a real-looking credential; split or obtain explicit human review. No model call."
     log_error "$CRITIC_FEEDBACK"
     return 1
@@ -630,6 +630,9 @@ ${CRITIC_FEEDBACK}"
   return 0
 }
 
+# Set when the only obstacle is CLI masking the critic cannot be shown.
+# shellcheck disable=SC2034 # read by run_quality_gates in worker-loop.sh
+CRITIC_MASKED_LINES=""
 # One part = one fresh critic session with its own nonce and delivery proof.
 CRITIC_PART_PATHS=()
 CRITIC_PART_NOTE=""
@@ -701,7 +704,7 @@ run_critic_attempts() {
   local attempt=1
   while :; do
     run_critic && return 0
-    [[ "$CRITIC_FAILURE_KIND" == review ]] && return 1
+    [[ "$CRITIC_FAILURE_KIND" == review || "$CRITIC_FAILURE_KIND" == masked ]] && return 1
     [[ "$CRITIC_FEEDBACK" == *"byte budget"* ]] && return 1
     (( attempt < LOOP_CRITIC_ATTEMPTS )) || return 1
     attempt=$((attempt + 1))

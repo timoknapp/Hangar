@@ -43,6 +43,7 @@ for f in \
   tests/retry-preflight.test.sh \
   tests/checkpoint-reaper.test.sh \
   tests/critic-split.test.sh \
+  tests/critic-masked-draft.test.sh \
   worker/entrypoint.sh \
   worker/git-credential-helper.sh \
   worker/runtime-preflight.sh \
@@ -108,6 +109,7 @@ bash tests/receipt.test.sh
 bash tests/retry-preflight.test.sh
 bash tests/checkpoint-reaper.test.sh
 bash tests/critic-split.test.sh
+bash tests/critic-masked-draft.test.sh
 bash tests/issue-evidence.test.sh
 bash tests/quality-lifecycle.test.sh
 bash tests/manual-intake.test.sh
