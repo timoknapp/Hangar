@@ -21,6 +21,7 @@ fi
 [[ -f tests/fixtures/process-secret-scan.py ]] && \
   python3 -c 'from pathlib import Path; p=Path("tests/fixtures/process-secret-scan.py"); compile(p.read_text(), str(p), "exec")'
 python3 -c 'from pathlib import Path; p=Path("tests/check-policy.test.py"); compile(p.read_text(), str(p), "exec")'
+python3 -m py_compile tools/factory-metrics.py tests/factory-metrics.test.py
 
 # --- C syntax (Linux only) ---
 if [[ "$(uname -s)" == "Linux" ]]; then
@@ -37,6 +38,8 @@ fi
 shell_scripts=()
 for f in \
   worker/worker-loop.sh \
+  worker/lib/*.sh \
+  tests/receipt.test.sh \
   worker/entrypoint.sh \
   worker/git-credential-helper.sh \
   worker/runtime-preflight.sh \
@@ -98,6 +101,7 @@ bash tests/public-release-check.sh
 bash tests/config-equivalence.sh
 bash tests/pr-guard.test.sh
 bash tests/worker-loop.test.sh
+bash tests/receipt.test.sh
 bash tests/issue-evidence.test.sh
 bash tests/quality-lifecycle.test.sh
 bash tests/manual-intake.test.sh

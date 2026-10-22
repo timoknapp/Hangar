@@ -420,6 +420,29 @@ gh pr list --repo your-org/your-repo \
   --json number,title | jq length
 ```
 
+### Attempt receipts and reliability metrics
+
+Every attempt ends with an issue comment carrying one hidden marker, for example:
+
+```text
+<!-- hangar-receipt {"v":1,"worker":"worker-1","kind":"issue","stage":"review","outcome":"failed","class":"infrastructure","seconds":1840,"implementerCredits":714} -->
+```
+
+- `outcome`: `ready`, `draft` (task-mandated), `ci-revision`, `failed` or `no-change` (the implementer stopped and asks for a decision).
+- `class`: `infrastructure`, `policy`, `code`, `review`, `decision` or `unclassified` for an unknown block reason.
+- `stage`: the last stage reached (`admission`, `implement`, `verify`, `review`, `publish`).
+- `seconds` and `implementerCredits` (implementer plus correction sessions) are `"unknown"` when not observed; they are never reported as zero.
+
+All values are publisher-derived; agent text never enters the marker.
+Compute the main metric (approved issues that reached Ready without manual intervention) from GitHub alone:
+
+```bash
+python3 tools/factory-metrics.py your-org/your-repo --since 2026-01-01
+```
+
+Issues from before receipts existed are counted from label history and reported as legacy.
+See [ADR 0001](adr/0001-factory-direction.md) for how the metric gates later changes.
+
 ---
 
 > Back to [README](../README.md) · [Install](INSTALL.md) · [Architecture](ARCHITECTURE.md)
