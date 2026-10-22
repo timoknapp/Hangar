@@ -31,6 +31,10 @@ CLEAN_REPO_URL="https://github.com/${REPO_SLUG}.git"
 # Publisher and coding user share the checkout through the squad group.
 umask 0002
 
+HANGAR_LIB_DIR="${HANGAR_LIB_DIR:-$(dirname "${BASH_SOURCE[0]}")/lib}"
+# shellcheck source=worker/lib/receipt.sh
+source "${HANGAR_LIB_DIR}/receipt.sh"
+
 # Trusted object interpretation never honors replacements or cached ancestry.
 # Ignore hooks and reset helpers before using the publisher-only credential helper.
 git() {
@@ -2026,6 +2030,7 @@ process_issue() {
   TASK_KEEP_DRAFT=false
   if grep -Eqi '(draft pull request|draft PR|PR as draft|keep .*draft|must .*draft)' <<<"$issue_body"; then TASK_KEEP_DRAFT=true; fi
   begin_task
+  receipt_begin issue
   PR_EXECUTIVE_SUMMARY=""
   log "Processing issue #${issue_num}: ${issue_title}"
 
@@ -2172,6 +2177,7 @@ After completing all code changes, you MUST create a file \`.squad/pr-summary.md
 
 This file will be used as the PR description. Be concise but thorough. Write from a developer's perspective."
 
+  TASK_STAGE=implement
   log "Running copilot ${LOOP_IMPLEMENTER} implementation session for issue #${issue_num}..."
   # Dedicated Copilot credential only; never use the publisher token for coding.
   local copilot_token="$COPILOT_PAT"
@@ -2207,6 +2213,7 @@ This file will be used as the PR description. Be concise but thorough. Write fro
     >> "$copilot_log" 2>&1 || copilot_exit=$?
 
   # Keep only bounded redacted evidence outside the checkout.
+  receipt_add_credits "$copilot_log"
   retain_gate_log "$copilot_log" implementer || true
   rm -f "$copilot_log"
 
@@ -2314,6 +2321,7 @@ process_revision() {
   TASK_KEEP_DRAFT=false
   if grep -Eqi '(draft pull request|draft PR|PR as draft|keep .*draft|must .*draft)' <<<"$issue_body"; then TASK_KEEP_DRAFT=true; fi
   begin_task
+  receipt_begin revision
   PR_EXECUTIVE_SUMMARY=""
   log "Processing revision for issue #${issue_num}: ${issue_title}"
 
@@ -2467,6 +2475,7 @@ After completing all code changes, you MUST create/update the file \`.squad/pr-s
 
 This file will be used as the PR description. Be concise but thorough. Write from a developer's perspective."
 
+  TASK_STAGE=implement
   log "Running copilot ${LOOP_IMPLEMENTER} revision session for issue #${issue_num}..."
   local copilot_token="$COPILOT_PAT"
   local copilot_log
@@ -2494,6 +2503,7 @@ This file will be used as the PR description. Be concise but thorough. Write fro
   run_agent_copilot "$copilot_token" "${copilot_args[@]}" \
     >> "$copilot_log" 2>&1 || copilot_exit=$?
 
+  receipt_add_credits "$copilot_log"
   retain_gate_log "$copilot_log" implementer || true
   rm -f "$copilot_log"
 
@@ -2606,7 +2616,8 @@ save_pending_publication() {
     --argjson manualIntake "$CURRENT_MANUAL_INTAKE" \
     --argjson checkPolicy "$check_policy" \
     --argjson deadline "$deadline" --argjson keepDraft "$TASK_KEEP_DRAFT" --argjson ciRounds "$TASK_CI_ROUNDS" \
-    '{issue:$issue,branch:$branch,url:$url,base:$base,head:$head,verified:$verified,reviewed:$reviewed,
+    --arg rKind "$TASK_KIND" --arg rStarted "$TASK_STARTED_AT" --arg rCredits "$TASK_CREDITS" \
+    '{attempt:{kind:$rKind,startedAt:$rStarted,credits:$rCredits},issue:$issue,branch:$branch,url:$url,base:$base,head:$head,verified:$verified,reviewed:$reviewed,
       inputHash:$inputHash,diffHash:$diffHash,body:$body,bodyHash:$bodyHash,contractHash:$contractHash,
       claim:$claim,claimOid:$claimOid,wip:$wip,manualIntake:$manualIntake,deadline:$deadline,keepDraft:$keepDraft,
       checkPolicy:$checkPolicy,ciRounds:$ciRounds}' >"$tmp" || return 1
@@ -2614,6 +2625,7 @@ save_pending_publication() {
 }
 
 publish_task() {
+  TASK_STAGE=publish
   local issue="$1" title="$2" branch="$3" remote_oid="$4" existing pr_url
   if ! sanitize_repository_git_config || ! workspace_clean; then
     cleanup_issue "$issue" "$branch" "Repository evidence drift before publication"; return 1
@@ -2869,7 +2881,8 @@ requeue_ci_revision() {
   ensure_pr_is_draft "$branch" || { CI_REQUEUE_NOTE="cannot enforce draft before CI revision"; return 1; }
   gh issue comment "$issue" --repo "$REPO_SLUG" --body "🔁 Squad Worker ${WORKER_ID}: ${cause} on the published head ${head:0:12} (automatic CI revision $((used + 1))/${LOOP_MAX_CI_ROUNDS}). Fix the cause shown under \"Failed GitHub Checks\" and the base integration notes; do not weaken, skip or delete tests or checks. The PR stays draft.
 
-<!-- hangar-ci-round pr=${url} head=${head} -->" >/dev/null || {
+<!-- hangar-ci-round pr=${url} head=${head} -->
+$(receipt_marker ci-revision code)" >/dev/null || {
     CI_REQUEUE_NOTE="could not record CI revision round"; return 1; }
   # The claim is released only after the retry trigger is durable; WIP stays
   # with this issue and is re-pointed by the next claim of the same issue.
@@ -2913,6 +2926,11 @@ resume_pending_publication() {
   CURRENT_MANUAL_INTAKE=$(jq -r '.manualIntake // false' <<<"$pending")
   ISSUE_CONTRACT_HASH=$(jq -r .contractHash <<<"$pending")
   TASK_DEADLINE=$(jq -r .deadline <<<"$pending")
+  # Older pending files lack attempt context; the marker then reports unknown, not zero.
+  TASK_STAGE=publish
+  TASK_KIND=$(jq -r '.attempt.kind // "issue"' <<<"$pending")
+  TASK_STARTED_AT=$(jq -r '.attempt.startedAt // "0"' <<<"$pending")
+  TASK_CREDITS=$(jq -r '.attempt.credits // "unknown"' <<<"$pending")
   local reason=""
   if ! snapshot=$(read_pr_snapshot "$branch" "$base"); then
     reason="Cannot read current-head PR checks (permission or API failure)"
@@ -2953,6 +2971,9 @@ resume_pending_publication() {
       gh issue edit "$issue" --repo "$REPO_SLUG" --remove-label squad:processing --remove-label squad:revision \
         --remove-label squad:done --add-label squad:review-pending >/dev/null || return 0
       release_issue_claim || return 0
+      gh issue comment "$issue" --repo "$REPO_SLUG" --body "📝 Worker ${WORKER_ID}: ${url} stays draft as the task requires and awaits human review.
+
+$(receipt_marker draft)" >/dev/null 2>&1 || log_error "Could not record the draft receipt for #${issue}"
       archive_pending waiting-human "$issue" || return 0
       CURRENT_ISSUE="" CURRENT_ISSUE_CONTEXT="" TASK_DEADLINE=0
       log "Task-mandated draft awaits human review: ${url}"
@@ -3000,6 +3021,9 @@ resume_pending_publication() {
   if ! publication_authorized "$issue" squad squad:processing; then return 0; fi
   gh issue edit "$issue" --repo "$REPO_SLUG" --remove-label squad:processing --remove-label squad:revision \
     --remove-label squad:review-pending --remove-label squad:failed --add-label squad:done || return 0
+  gh issue comment "$issue" --repo "$REPO_SLUG" --body "✅ Worker ${WORKER_ID}: ${url} is ready for human review (never auto-merged).
+
+$(receipt_marker ready)" >/dev/null 2>&1 || log_error "Could not record the ready receipt for #${issue}"
   release_issue_claim || return 0
   mv "$file" "${LOOP_STATE_DIR}/ready-${issue}.json" || return 0
   CURRENT_ISSUE="" CURRENT_ISSUE_CONTEXT="" TASK_DEADLINE=0
@@ -3028,8 +3052,12 @@ cleanup_issue() {
     log_error "Terminal state write failed; claim retained for explicit recovery"
     return 1
   fi
+  local outcome=failed
+  [[ "$(receipt_class "$reason")" != decision ]] || outcome=no-change
   gh issue comment "$issue_num" --repo "$REPO_SLUG" \
-    --body "❌ Worker ${WORKER_ID} blocked: ${reason}. No completion claimed. Local work retained; explicitly repair/recover and re-add squad:revision to retry." >/dev/null 2>&1 || true
+    --body "❌ Worker ${WORKER_ID} blocked: ${reason}. No completion claimed. Local work retained; explicitly repair/recover and re-add squad:revision to retry.
+
+$(receipt_marker "$outcome" "$(receipt_class "$reason")")" >/dev/null 2>&1 || true
   release_issue_claim || return 1
   CURRENT_ISSUE="" CURRENT_ISSUE_CONTEXT=""
 }
@@ -3842,6 +3870,7 @@ ${capability_instructions}
 
   fix_exit=0
   run_agent_copilot "$COPILOT_PAT" "${fix_args[@]}" >"$flog" 2>&1 || fix_exit=$?
+  receipt_add_credits "$flog"
   if [[ $fix_exit -ne 0 ]]; then
     log_error "Quality-gate correction session exited with code ${fix_exit}"
     rm -f "$flog"
@@ -3941,6 +3970,7 @@ run_quality_gates() {
   GATE_NOTE=""
   while :; do
     task_integrity || { GATE_NOTE="Branch or ancestry drift"; return 1; }
+    TASK_STAGE=verify
     run_verify_with_corrections || return 1
     summary_complete || { GATE_NOTE="Missing/incomplete five-heading summary; review blocked"; return 1; }
     build_final_pr_body || return 1
@@ -3948,6 +3978,7 @@ run_quality_gates() {
       GATE_NOTE="Independent critic disabled; draft only."
       return 0
     fi
+    TASK_STAGE=review
     if run_critic_attempts; then
       # Suggestions first reported by this approval are not in the bound body yet:
       # one bounded full re-review of the same head binds them (no correction used).

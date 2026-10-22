@@ -113,10 +113,12 @@ COPY generate-token.sh /home/copilot/generate-token.sh
 COPY git-credential-helper.sh /home/copilot/git-credential-helper.sh
 COPY runtime-preflight.sh /home/copilot/runtime-preflight.sh
 COPY loop-review-rubric.md /home/copilot/loop-review-rubric.md
+COPY lib/ /home/copilot/lib/
 RUN chmod +x /entrypoint.sh /home/copilot/worker-loop.sh /home/copilot/generate-token.sh /home/copilot/git-credential-helper.sh /home/copilot/runtime-preflight.sh \
   && chown copilot:squad /home/copilot/worker-loop.sh /home/copilot/generate-token.sh /home/copilot/git-credential-helper.sh /home/copilot/runtime-preflight.sh /home/copilot/loop-review-rubric.md \
   && chmod 700 /home/copilot/worker-loop.sh /home/copilot/generate-token.sh /home/copilot/git-credential-helper.sh /home/copilot/runtime-preflight.sh \
-  && chmod 600 /home/copilot/loop-review-rubric.md
+  && chmod 600 /home/copilot/loop-review-rubric.md \
+  && chown -R copilot:squad /home/copilot/lib && chmod 700 /home/copilot/lib && chmod 600 /home/copilot/lib/*.sh
 
 EXPOSE 8080 22
 
