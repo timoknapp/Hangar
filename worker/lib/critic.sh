@@ -130,7 +130,7 @@ ${evidence}
 ${context:-Issue context unavailable. Review the diff conservatively.}
 
 ## Immutable review binding
-
+${CRITIC_PART_NOTE}
 Base: ${TASK_BASE_SHA}
 Head: ${REVIEWED_HEAD}
 Diff SHA256: ${REVIEW_DIFF_HASH}
@@ -460,7 +460,7 @@ run_critic() {
   # Binary files (screenshots) are bound by full blob IDs, not base85 payloads:
   # a PNG patch can be thousands of unreadable lines that exhaust the critic's
   # context before any code is reviewed. Pixels are inspected with image view.
-  diff=$(git diff --no-ext-diff --no-textconv --full-index "${base_ref}...${REVIEWED_HEAD}") || return 1
+  diff=$(git diff --no-ext-diff --no-textconv --full-index "${base_ref}...${REVIEWED_HEAD}" -- "${CRITIC_PART_PATHS[@]}") || return 1
   [[ -n "$diff" ]] || { CRITIC_FEEDBACK="Empty review diff"; return 1; }
   REVIEW_DIFF_HASH=$(printf '%s' "$diff" | sha256sum | cut -d' ' -f1)
   REVIEW_BODY_HASH=$(printf '%s' "$FINAL_PR_BODY" | sha256sum | cut -d' ' -f1)
@@ -628,6 +628,69 @@ ${CRITIC_FEEDBACK}"
   CRITIC_FAILURE_KIND=""
   log "Critic verdict: APPROVE"
   return 0
+}
+
+# One part = one fresh critic session with its own nonce and delivery proof.
+CRITIC_PART_PATHS=()
+CRITIC_PART_NOTE=""
+LOOP_CRITIC_SPLIT_LINES="${LOOP_CRITIC_SPLIT_LINES:-2000}"
+
+# Groups changed paths into parts of at most LOOP_CRITIC_SPLIT_LINES diff lines,
+# keeping each file whole and ordered. Binary files are short blob-ID entries.
+# Prints one JSON array of path arrays; one part when below the threshold.
+critic_parts() {
+  local base_ref
+  base_ref=$(trusted_base_ref) || return 1
+  git diff --no-ext-diff --no-textconv --numstat -z "${base_ref}...$(git rev-parse HEAD)" |
+    node -e '
+const max = Number(process.argv[1]);
+const raw = require("fs").readFileSync(0, "utf8").split("\0");
+const files = [];
+for (let i = 0; i < raw.length; i++) {
+  const m = /^(-|\d+)\t(-|\d+)\t(.*)$/s.exec(raw[i]);
+  if (!m) continue;
+  let path = m[3];
+  if (path === "") { i += 2; path = raw[i]; }          // rename: old\0new\0, review the new path
+  const lines = m[1] === "-" ? 4 : Number(m[1]) + Number(m[2]) + 8;
+  files.push({path, lines});
+}
+const parts = []; let cur = [], size = 0;
+for (const f of files) {
+  if (cur.length && size + f.lines > max) { parts.push(cur); cur = []; size = 0; }
+  cur.push(f.path); size += f.lines;
+}
+if (cur.length) parts.push(cur);
+process.stdout.write(JSON.stringify(parts));
+' "$LOOP_CRITIC_SPLIT_LINES"
+}
+
+# Review the whole change; split into sequential parts above the threshold.
+# Every part must APPROVE with full delivery; findings accumulate in the one
+# shared ledger, so later parts and corrections see all of them.
+run_critic_review() {
+  local parts count i
+  CRITIC_PART_PATHS=() CRITIC_PART_NOTE=""
+  parts=$(critic_parts) || { CRITIC_FAILURE_KIND=infrastructure; CRITIC_FEEDBACK="Could not list the review diff"; return 1; }
+  count=$(jq 'length' <<<"$parts") || return 1
+  (( count > 1 )) || { run_critic_attempts; return; }
+  log "Critic: change exceeds ${LOOP_CRITIC_SPLIT_LINES} diff lines; reviewing ${count} parts separately"
+  local -a approved=()
+  for (( i = 0; i < count; i++ )); do
+    mapfile -t CRITIC_PART_PATHS < <(jq -r --argjson i "$i" '.[$i][]' <<<"$parts")
+    CRITIC_PART_NOTE="Review part $((i + 1)) of ${count}: the diff below contains ONLY these files; other parts are reviewed in separate sessions. Judge this part completely; report cross-part concerns you can see as findings.
+Files: $(printf '%s, ' "${CRITIC_PART_PATHS[@]}" | sed 's/, $//')
+"
+    if ! run_critic_attempts; then
+      CRITIC_FEEDBACK="Review part $((i + 1))/${count}: ${CRITIC_FEEDBACK}"
+      CRITIC_PART_PATHS=() CRITIC_PART_NOTE=""
+      return 1
+    fi
+    approved+=("$REVIEW_DIFF_HASH")
+  done
+  CRITIC_PART_PATHS=() CRITIC_PART_NOTE=""
+  # Publication binds one diff hash: bind the ordered list of part hashes.
+  REVIEW_DIFF_HASH=$(printf '%s\n' "${approved[@]}" | sha256sum | cut -d' ' -f1)
+  log "Critic: all ${count} parts approved"
 }
 
 # A non-review critic failure (content filter, compaction, CLI transport) is

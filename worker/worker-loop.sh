@@ -3266,13 +3266,13 @@ run_quality_gates() {
       return 0
     fi
     TASK_STAGE=review
-    if run_critic_attempts; then
+    if run_critic_review; then
       # Suggestions first reported by this approval are not in the bound body yet:
       # one bounded full re-review of the same head binds them (no correction used).
       [[ "$(render_review_suggestions)" == "$REVIEW_SUGGESTIONS_MD" ]] && return 0
       build_final_pr_body || return 1
       log "Critic: re-reviewing once so new suggestions are bound into the PR body"
-      if run_critic_attempts; then
+      if run_critic_review; then
         # ponytail: a second approval may add more suggestions; those stay in the
         # worker log instead of looping review again (the reviewed body stays bound).
         [[ "$(render_review_suggestions)" == "$REVIEW_SUGGESTIONS_MD" ]] ||
