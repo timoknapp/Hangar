@@ -44,6 +44,10 @@ issues = [
     issue(6, events=[{"event": "labeled", "label": "squad:done", "bot": True}], merged=True),  # legacy clean
     issue(7, ["<!-- hangar-receipt {broken} -->"]),                                 # only invalid receipts
     issue(8, [marker(outcome="draft")]),                                          # task-mandated draft
+    issue(9, [marker(outcome="failed", autoRetry=True, **{"class": "infrastructure"}),
+              marker(outcome="ready")]),                                          # auto retry then clean
+    issue(10, [marker(outcome="failed", autoRetry=True, **{"class": "infrastructure"}),
+               marker(outcome="failed", autoRetry=False, **{"class": "infrastructure"})]),  # retry used up
 ]
 r = fm.report(issues)
 rows = {x["number"]: x for x in r["issues"]}
@@ -52,10 +56,12 @@ assert not rows[2]["clean"] and rows[2]["humanRetries"] == 1
 assert rows[3]["awaitingAnswer"] and not rows[3]["attempted"], "a pending question is neither success nor failure"
 assert rows[5]["source"] == "legacy" and not rows[5]["clean"]
 assert not rows[7]["attempted"] and rows[7]["invalidReceipts"] == 1, "invalid receipts never count as success"
-assert r["attempted"] == 6 and r["cleanReady"] == 4, r
-assert r["failureClasses"] == {"infrastructure": 1, "unknown": 1}, r["failureClasses"]
+assert rows[9]["clean"] and rows[9]["autoRetries"] == 1, "a failure taken over by the automatic retry is no intervention"
+assert not rows[10]["clean"] and rows[10]["failures"] == 1
+assert r["attempted"] == 8 and r["cleanReady"] == 5 and r["autoRetries"] == 2, r
+assert r["failureClasses"] == {"infrastructure": 4, "unknown": 1}, r["failureClasses"]
 assert r["implementerCredits"] == "unknown", "one unknown makes the total unknown"
 assert r["legacyIssues"] == 2 and r["awaitingAnswer"] == 1 and r["invalidReceipts"] == 1
-assert r["questionsPerIssue"] == round(2 / 7, 2)
+assert r["questionsPerIssue"] == round(2 / 9, 2)
 assert fm.report([])["cleanRate"] is None
 print("PASS: metrics count interventions, questions, legacy fallback and unknown usage")

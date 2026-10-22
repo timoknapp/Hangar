@@ -54,12 +54,15 @@ def summarize_issue(issue: dict) -> dict:
     if receipts:
         source = "receipt"
         ready = any(r["outcome"] in ("ready", "draft") for r in receipts)
-        failures = [r for r in receipts if r["outcome"] == "failed"]
+        failed = [r for r in receipts if r["outcome"] == "failed"]
+        # A failure the automatic retry took over is not a human intervention.
+        failures = [r for r in failed if r.get("autoRetry") is not True]
         questions = sum(1 for r in receipts if r["outcome"] == "no-change")
         credits = [r.get("implementerCredits") for r in receipts]
         known = all(isinstance(c, int) for c in credits)
         usage = sum(credits) if known else "unknown"
-        classes = [r.get("class") or "none" for r in failures]
+        classes = [r.get("class") or "none" for r in failed]
+        auto_retries = len(failed) - len(failures)
         attempts = len(receipts)
     else:
         source = "legacy"
@@ -67,6 +70,7 @@ def summarize_issue(issue: dict) -> dict:
         failures = [e for e in labeled if e.get("label") == "squad:failed"]
         ready = any(e.get("label") == "squad:done" for e in labeled) and issue.get("prMerged", False)
         questions, usage, classes, attempts = 0, "unknown", ["unknown"] * len(failures), len(failures) + int(ready)
+        auto_retries = 0
     # Waiting on a human answer is neither success nor failure yet.
     awaiting = not ready and not failures and questions > 0
     attempted = (attempts > 0 or bool(failures)) and not awaiting
@@ -74,7 +78,7 @@ def summarize_issue(issue: dict) -> dict:
     return {"number": issue["number"], "source": source, "attempted": attempted, "ready": ready,
             "awaitingAnswer": awaiting,
             "clean": clean, "attempts": attempts, "failures": len(failures), "humanRetries": retries,
-            "questions": questions, "classes": classes, "implementerCredits": usage, "invalidReceipts": invalid}
+            "questions": questions, "autoRetries": auto_retries, "classes": classes, "implementerCredits": usage, "invalidReceipts": invalid}
 
 
 def report(issues: list[dict]) -> dict:
@@ -93,6 +97,7 @@ def report(issues: list[dict]) -> dict:
         "questionsPerIssue": round(sum(r["questions"] for r in asked) / len(asked), 2) if asked else None,
         "failureClasses": classes,
         "implementerCredits": sum(credits) if credits and all(isinstance(c, int) for c in credits) else "unknown",
+        "autoRetries": sum(r["autoRetries"] for r in attempted),
         "legacyIssues": sum(r["source"] == "legacy" for r in attempted),
         "awaitingAnswer": sum(r["awaitingAnswer"] for r in rows),
         "invalidReceipts": sum(r["invalidReceipts"] for r in rows),
@@ -149,7 +154,7 @@ def main() -> int:
         print(f"attempted issues: {r['attempted']} (legacy without receipts: {r['legacyIssues']})")
         print(f"ready without intervention: {r['cleanReady']} ({rate})")
         print(f"questions per issue: {r['questionsPerIssue']}; awaiting an answer: {r['awaitingAnswer']}")
-        print(f"failure classes: {json.dumps(r['failureClasses'])}")
+        print(f"failure classes: {json.dumps(r['failureClasses'])}; automatic retries: {r['autoRetries']}")
         print(f"implementer credits: {r['implementerCredits']}; invalid receipts: {r['invalidReceipts']}")
     return 0
 

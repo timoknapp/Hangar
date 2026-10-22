@@ -40,6 +40,7 @@ for f in \
   worker/worker-loop.sh \
   worker/lib/*.sh \
   tests/receipt.test.sh \
+  tests/retry-preflight.test.sh \
   worker/entrypoint.sh \
   worker/git-credential-helper.sh \
   worker/runtime-preflight.sh \
@@ -102,6 +103,7 @@ bash tests/config-equivalence.sh
 bash tests/pr-guard.test.sh
 bash tests/worker-loop.test.sh
 bash tests/receipt.test.sh
+bash tests/retry-preflight.test.sh
 bash tests/issue-evidence.test.sh
 bash tests/quality-lifecycle.test.sh
 bash tests/manual-intake.test.sh
