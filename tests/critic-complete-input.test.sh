@@ -279,7 +279,7 @@ run_critic || fail "preflight rejected escaped input: $CRITIC_FEEDBACK"
   run_agent_copilot() { fail 'masked credential called model'; }
   FINAL_PR_BODY="Example token ghp_$(printf 'A%.0s' {1..24}) must not be used."
   if run_critic >"$TMP/preflight.log" 2>&1; then fail 'maskable credential reached model'; fi
-  [[ "$CRITIC_FAILURE_KIND" == incomplete && "$CRITIC_FEEDBACK" == *'masks (lines: '* ]] || fail 'preflight classification'
+  [[ "$CRITIC_FAILURE_KIND" == masked && "$CRITIC_FEEDBACK" == *'masks (lines: '* ]] || fail 'preflight classification'
   if grep -q 'ghp_' "$TMP/preflight.log" <<<"$CRITIC_FEEDBACK"; then fail 'preflight leaked credential text'; fi
   [[ "$CRITIC_FEEDBACK" != *ghp_* ]] || fail 'preflight feedback leaked credential text'
   [[ -z "$(find "$WORKSPACE_DIR" -maxdepth 1 -name '.critic-input.*.md')" ]] || fail 'input not cleaned'
