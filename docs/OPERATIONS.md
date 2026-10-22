@@ -460,6 +460,17 @@ After `LOOP_RETRY_DELAY_SECONDS` (default 600) a worker removes `squad:failed`; 
 Closing the issue, removing `squad` or retrying it by hand cancels the pending automatic retry.
 Deterministic failures (delivery proof for oversized or masked review input, drift, policy, scope, code, review, decision stops) never retry automatically.
 
+### Checkpoint resume and reaper
+
+After the implementer produced committed work, the worker writes a private checkpoint (branch, exact HEAD, pinned base, issue contract, summary).
+When an automatic retry later picks the issue up on the same worker, it resumes from that commit: it proves the pinned base again and reruns exactly the normal gates and publisher, never the implementer.
+A changed issue contract, another worker, a moved or deleted branch, a dirty workspace or a malformed checkpoint starts a fresh attempt instead; nothing is discarded.
+A checkpoint is dropped once its work is pushed, or when the issue is closed or loses `squad`.
+
+On an idle worker, at most every `LOOP_REAP_INTERVAL` seconds (default 3600), the reaper looks for atomic claims whose claim commit names this worker.
+Because the worker holds no work, such a claim is an orphan of a crash: it is blocked as an interrupted attempt, which makes it eligible for the automatic retry.
+Claims of other workers are never touched, and the reaper never deletes branches or work.
+
 ---
 
 > Back to [README](../README.md) · [Install](INSTALL.md) · [Architecture](ARCHITECTURE.md)

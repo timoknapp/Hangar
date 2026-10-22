@@ -758,7 +758,7 @@ GH_MODE="budget"
 pass "PR lookup distinguishes API failure, identity mismatch, and confirmed state"
 
 revision_source=$(sed -n '/^process_revision()/,/^}/p' "$WORKER_SCRIPT")
-issue_source=$(sed -n '/^process_issue()/,/^}/p' "$WORKER_SCRIPT")
+issue_source=$(sed -n '/^process_issue()/,/^}/p;/^finish_issue()/,/^}/p' "$WORKER_SCRIPT")
 publish_source=$(declare -f publish_task)
 for flow in "$revision_source" "$issue_source"; do
   gate_line=$(grep -n run_quality_gates <<<"$flow" | head -1 | cut -d: -f1)
