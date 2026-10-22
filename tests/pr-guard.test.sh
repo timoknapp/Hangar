@@ -6,7 +6,7 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 WORKER="$ROOT/worker/worker-loop.sh"
 
 revision=$(sed -n '/^publish_task()/,/^}/p' "$WORKER")
-issue=$(sed -n '/^process_issue()/,/^}/p' "$WORKER")
+issue=$(sed -n '/^process_issue()/,/^}/p;/^finish_issue()/,/^}/p' "$WORKER")
 
 lookup_line=$(printf '%s\n' "$revision" | grep -n 'lookup_pr_url_for_branch' | head -1 | cut -d: -f1)
 draft_line=$(printf '%s\n' "$revision" | grep -n 'ensure_pr_is_draft' | head -1 | cut -d: -f1)

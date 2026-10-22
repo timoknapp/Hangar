@@ -40,6 +40,8 @@ source "${HANGAR_LIB_DIR}/queue.sh"
 source "${HANGAR_LIB_DIR}/retry.sh"
 # shellcheck source=worker/lib/preflight.sh
 source "${HANGAR_LIB_DIR}/preflight.sh"
+# shellcheck source=worker/lib/checkpoint.sh
+source "${HANGAR_LIB_DIR}/checkpoint.sh"
 
 # Trusted object interpretation never honors replacements or cached ancestry.
 # Ignore hooks and reset helpers before using the publisher-only credential helper.
@@ -1959,6 +1961,17 @@ process_issue() {
     abort_issue_without_git "$issue_num" "Repository Git metadata failed the trust check"
     return 1
   fi
+  if load_checkpoint "$issue_num"; then
+    # Same pinned-base proof as a revision, then exactly the fresh-attempt gates.
+    TASK_STAGE=verify
+    if ! git checkout --no-overwrite-ignore --detach "$TASK_BASE_SHA" || ! verify_clean_baseline ||
+       ! git checkout --no-overwrite-ignore "$TASK_BRANCH" || ! task_integrity; then
+      cleanup_issue "$issue_num" "$TASK_BRANCH" "Baseline verification or launcher failed; no implementation attempted"
+      return 1
+    fi
+    finish_issue "$issue_num" "$issue_title" "$TASK_BRANCH"
+    return
+  fi
   if ! prepare_task_base "$branch_name"; then
     cleanup_issue "$issue_num" "$branch_name" "Fresh clean base preparation failed; workspace retained"
     return 1
@@ -2168,6 +2181,14 @@ Auto-committed by Squad Worker ${WORKER_ID} (copilot left changes unstaged)." ||
     cleanup_issue "$issue_num" "$branch_name" "Could not process PR summary metadata safely"
     return 1
   fi
+  write_checkpoint "$issue_num" "$branch_name" || log_error "Checkpoint for #${issue_num} not written; a retry will start fresh"
+  finish_issue "$issue_num" "$issue_title" "$branch_name"
+}
+
+# Gates and publication for committed new work; shared by fresh attempts and
+# checkpoint resumes so both run exactly the same checks.
+finish_issue() {
+  local issue_num="$1" issue_title="$2" branch_name="$3" base_ref
   # Checked on the committed result, before costly gates.
   if ! fresh_base_compatible; then
     cleanup_issue "$issue_num" "$branch_name" "Base check after implementation: ${BASE_DRIFT_REASON}"
@@ -2201,7 +2222,6 @@ Auto-committed by Squad Worker ${WORKER_ID} (copilot left changes unstaged)." ||
   base_ref=$(trusted_base_ref)
 
   publish_task "$issue_num" "$issue_title" "$branch_name" "" || return 1
-
 }
 # ---------------------------------------------------------------------------
 # Process a revision for an existing issue (follow-up comments)
@@ -2520,7 +2540,9 @@ save_pending_publication() {
       inputHash:$inputHash,diffHash:$diffHash,body:$body,bodyHash:$bodyHash,contractHash:$contractHash,
       claim:$claim,claimOid:$claimOid,wip:$wip,manualIntake:$manualIntake,deadline:$deadline,keepDraft:$keepDraft,
       checkPolicy:$checkPolicy,ciRounds:$ciRounds}' >"$tmp" || return 1
-  chmod 600 "$tmp" && mv "$tmp" "${LOOP_STATE_DIR}/pending.json"
+  chmod 600 "$tmp" && mv "$tmp" "${LOOP_STATE_DIR}/pending.json" || return 1
+  # Pushed work continues only as a revision; never resume an unpublished copy.
+  clear_checkpoint "$issue"
 }
 
 publish_task() {
@@ -3525,7 +3547,7 @@ run_critic() {
   task_integrity || { CRITIC_FEEDBACK="Branch or ancestry drift"; return 1; }
   REVIEWED_HEAD=$(git rev-parse HEAD) || return 1
   rubric=$(resolve_critic_rubric) || { CRITIC_FEEDBACK="Trusted review context unavailable/incomplete"; return 1; }
-  base_ref=$(trusted_base_ref) || return 1
+  base_ref=$(trusted_base_ref)
   # Binary files (screenshots) are bound by full blob IDs, not base85 payloads:
   # a PNG patch can be thousands of unreadable lines that exhaust the critic's
   # context before any code is reviewed. Pixels are inspected with image view.
@@ -4197,6 +4219,7 @@ main() {
       sleep "$POLL_INTERVAL"; continue
     fi
     TASK_DEADLINE=0
+    reap_orphans
     process_due_retries
 
     # Priority applies only on a free worker; pending/current work above is never interrupted.
