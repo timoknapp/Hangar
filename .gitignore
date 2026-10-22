@@ -49,3 +49,5 @@ tests/output/
 
 # --- Node (if any tooling is added later) ---
 node_modules/
+__pycache__/
+*.pyc
