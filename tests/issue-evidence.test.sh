@@ -52,7 +52,7 @@ git() { [[ "$MODE" != git-fail ]] || return 42; [[ "$1" == ls-tree ]] && { echo 
 read_trusted_file() { printf '## Autonomous Work Approval\n| Order | Backlog ID | Lane | Issue | Work type | Priority | Dependencies | Approval | Autonomous |\n| 220 | sign-in | design-first | #336 | proposal | P2 | #335 closed | approved | yes |\n'; }
 refresh_issue_evidence
 jq -e '.number==336 and .state=="OPEN" and (.labels|index("implementation-approved")) != null and .requiredLabelEvents[0].actor=="owner" and .referencedIssues[0].number==335 and .referencedIssues[0].state=="CLOSED" and (.pinnedBacklogRow|contains("design-first"))' <<<"$CURRENT_ISSUE_EVIDENCE" >/dev/null
-issue_evidence_context | grep -q 'do not re-query private GitHub'
+[[ "$(issue_evidence_context)" == *'do not re-query private GitHub'* ]]
 ok 'live label, actor, pinned queue and prerequisite delivered without GitHub credentials'
 for MODE in missing revoked forged scope closed api-fail claim provenance truncated dependency-fail git-fail; do
   reject refresh_issue_evidence
@@ -78,7 +78,7 @@ CURRENT_ISSUE=337; reject issue_evidence_context; ok 'evidence from another issu
   reject issue_evidence_context
   refresh_issue_evidence
   jq -e '.admissionClass == "manual" and (.pinnedBacklogRow | contains("design-first"))' <<<"$CURRENT_ISSUE_EVIDENCE" >/dev/null || fail 'manual context lost restrictive queue row'
-  issue_evidence_context | grep -q 'not a repository assertion'
+  [[ "$(issue_evidence_context)" == *'not a repository assertion'* ]]
   CURRENT_MANUAL_INTAKE=false
   reject issue_evidence_context
   CURRENT_MANUAL_INTAKE=true

@@ -440,6 +440,7 @@ Compute the main metric (approved issues that reached Ready without manual inter
 python3 tools/factory-metrics.py your-org/your-repo --since 2026-01-01
 ```
 
+`--since` filters worker activity (receipts and label changes) by date, not issue creation: an older issue attempted after a rollout counts with its later attempts only.
 Issues from before receipts existed are counted from label history and reported as legacy.
 See [ADR 0001](adr/0001-factory-direction.md) for how the metric gates later changes.
 
@@ -713,6 +714,7 @@ Local unpublished revision commits differing from the remote are deliberately bl
 A revision whose branch was never pushed (the earlier attempt was blocked before publication) continues from the branch the blocked worker retained locally.
 The whole branch then goes through verification and the independent review against the base, and is published as a new draft with an empty lease.
 Only that worker holds the work: if another worker claims the revision, it blocks with "Revision branch was never published …" (policy, no automatic retry); re-add `squad:revision`.
+A revision is admitted only if `squad:revision` is still present after the claim; a sibling that already consumed it (for example by blocking) cannot be overtaken by a worker acting on an older queue snapshot.
 Agent scratch output (logs, browser profiles, caches) belongs in `.hangar-scratch/`, which the publisher registers in `.git/info/exclude`; it is never committed.
 If a correction's result still cannot be committed (for example other unreadable untracked files), the attempt blocks with "Correction could not be committed …" instead of listing the findings that correction was addressing; the work stays in the local branch for an explicit revision.
 
