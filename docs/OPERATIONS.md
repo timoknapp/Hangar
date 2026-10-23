@@ -713,6 +713,8 @@ Local unpublished revision commits differing from the remote are deliberately bl
 A revision whose branch was never pushed (the earlier attempt was blocked before publication) continues from the branch the blocked worker retained locally.
 The whole branch then goes through verification and the independent review against the base, and is published as a new draft with an empty lease.
 Only that worker holds the work: if another worker claims the revision, it blocks with "Revision branch was never published …" (policy, no automatic retry); re-add `squad:revision`.
+Agent scratch output (logs, browser profiles, caches) belongs in `.hangar-scratch/`, which the publisher registers in `.git/info/exclude`; it is never committed.
+If a correction's result still cannot be committed (for example other unreadable untracked files), the attempt blocks with "Correction could not be committed …" instead of listing the findings that correction was addressing; the work stays in the local branch for an explicit revision.
 
 ### Mandatory rollout proof for launcher changes
 

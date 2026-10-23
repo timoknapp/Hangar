@@ -112,6 +112,8 @@ REVISION_BASE_CONFLICTS=""
 REVISION_MERGE_COMMIT=""
 # Revision branch never pushed (earlier attempt blocked before publication): ""|local|missing.
 REVISION_UNPUBLISHED=""
+# Ignored (via .git/info/exclude) workspace directory for agent scratch output.
+AGENT_SCRATCH_DIR=".hangar-scratch"
 LOOP_MAX_BASE_CONFLICTS="${LOOP_MAX_BASE_CONFLICTS:-40}"
 # A red required check or a PR conflict on the exact published head requeues the
 # existing revision flow at most this many times per PR (0 = terminal as before).
@@ -663,6 +665,11 @@ sanitize_repository_git_config() {
     rm -f "$trusted_config"
     return 1
   fi
+  # Agent scratch (logs, browser profiles) lives in one ignored directory so it
+  # is never committed and never blocks the publisher's `git add -A`.
+  if ! grep -qxF "/${AGENT_SCRATCH_DIR}/" "$gitdir/info/exclude" 2>/dev/null; then
+    { [[ -d "$gitdir/info" ]] || mkdir -m 2770 "$gitdir/info"; } && printf '/%s/\n' "$AGENT_SCRATCH_DIR" >>"$gitdir/info/exclude" || return 1
+  fi
   check_repository_evidence metadata && check_repository_evidence index
 }
 
@@ -863,10 +870,10 @@ fetch_task_base() {
 repair_shared_workspace_modes() {
   local remaining before after count
   remaining=$(task_seconds_remaining) || return 1
-  before=$(/usr/bin/find "$WORKSPACE_DIR" -xdev -type d ! -perm -g=rwx -printf x) || {
-    log_error "Shared workspace is not fully readable by the publisher; operator repair required"
-    return 1
-  }
+  # A directory the publisher cannot open (e.g. a 2700 browser profile of the
+  # coding user) is itself listed; the coding user repairs it below and the
+  # final scan, not this first one, decides.
+  before=$(/usr/bin/find "$WORKSPACE_DIR" -xdev -type d ! -perm -g=rwx -printf x 2>/dev/null) || before="${before:-x}"
   [[ -n "$before" ]] || return 0
   # chmod on directories owned by the other party fails by design; the final
   # scan, not these exit codes, decides.
@@ -1304,6 +1311,7 @@ implementer_capability_instructions() {
 - Headless path checks resolve literal paths before compound shell commands run. Use explicit repository-root paths for log redirections and later reads, especially after a `cd`; avoid `../` paths whose intended meaning depends on that `cd`. Prefer small commands or package --prefix options. Correct a mistakenly named path only to its already-authorized workspace destination; never broaden file access or route around a genuine denial.
 - Do NOT push or use `gh`, HTTP, or MCP tools to mutate GitHub, create/update a pull request, or change issue labels. Read-only discovery may be attempted, but no repository credential is provided; the trusted outer worker exclusively owns GitHub publication.
 - You may create local commits or leave edits uncommitted. The outer worker captures both, then independently runs the complete verification and critic gates.
+- Write logs, browser profiles, caches and other scratch output only under \`.hangar-scratch/\` (ignored by Git, never committed); do not create other untracked scratch directories.
 - The built-in GitHub MCP is intentionally unavailable. Use the issue, Git, and failed-check context supplied by the outer worker.
 SQUAD_CAPABILITIES
       ;;
@@ -3200,9 +3208,11 @@ ${capability_instructions}
   fi
   task_integrity || return 1
   prepare_pr_summary || return 1
-  if [[ $(git status --porcelain 2>/dev/null | wc -l) -gt 0 ]]; then
-    git add -A || return 1
-    git commit -m "fix: address quality-gate feedback for #${CURRENT_ISSUE}" || return 1
+  if [[ $(git status --porcelain 2>/dev/null | wc -l) -gt 0 ]] &&
+     { ! git add -A || ! git commit -m "fix: address quality-gate feedback for #${CURRENT_ISSUE}"; }; then
+    CORRECTION_BLOCK="Correction could not be committed (for example unreadable untracked scratch files); its work is retained locally"
+    log_error "$CORRECTION_BLOCK"
+    return 1
   fi
   prepare_pr_summary || return 1
   return 0
@@ -3215,6 +3225,8 @@ ${capability_instructions}
 correction_budget() {
   if [[ "$CURRENT_MANUAL_INTAKE" == true ]]; then printf '%s\n' "$LOOP_MAX_RETRIES_MANUAL"; else printf '%s\n' "$LOOP_MAX_RETRIES"; fi
 }
+
+correction_unrecorded() { [[ "$CORRECTION_BLOCK" == "Correction could not be committed"* ]]; }
 
 take_correction() {
   [[ "$CORRECTIONS_USED" -lt "$(correction_budget)" ]] && task_seconds_remaining >/dev/null || return 1
@@ -3232,6 +3244,7 @@ run_verify_with_corrections() {
       1)
         if [[ "$BASE_VERIFY_OK" != true ]] || ! take_correction "$VERIFY_LOG_TAIL"; then
           GATE_NOTE="Verification failed; correction budget exhausted (${CORRECTIONS_USED}/$(correction_budget)) or baseline unproven.${CORRECTION_BLOCK:+ ${CORRECTION_BLOCK}}"
+          ! correction_unrecorded || GATE_NOTE="$CORRECTION_BLOCK"
           return 1
         fi ;;
       5) GATE_NOTE="Operator policy blocked verification; no code correction attempted. ${VERIFY_LOG_TAIL}"; return 1 ;;
@@ -3329,6 +3342,8 @@ run_quality_gates() {
     if ! take_correction "Independent review requested changes. Address every open BLOCK finding listed below."; then
       GATE_NOTE="Independent review: open BLOCK findings remain after ${CORRECTIONS_USED}/$(correction_budget) corrections.${CORRECTION_BLOCK:+ ${CORRECTION_BLOCK}}
 $(render_critic_findings BLOCK)"
+      # Those findings predate the unrecorded correction; never report them as remaining.
+      ! correction_unrecorded || GATE_NOTE="$CORRECTION_BLOCK"
       return 1
     fi
   done
