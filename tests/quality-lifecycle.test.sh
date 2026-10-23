@@ -653,6 +653,26 @@ ok 'operator policy failure stays terminal with precise diagnosis'
   archived=$(git for-each-ref --format='%(objectname)' 'refs/heads/squad-archive/rev3-*')
   [[ "$archived" == "$LOCAL3" ]] || fail 'unpublished local work not archived'
   ok 'stale local revision branches are fast-forwarded or archived, never deleted'
+
+  # A revision branch that was never pushed (attempt blocked before publication):
+  # the retained local branch is the start; without it the revision fails closed.
+  git checkout -q -B rev4 "$MAIN3"
+  printf 'four\n' > four.txt
+  git add four.txt && git commit -qm four
+  LOCAL4=$(git rev-parse HEAD)
+  git checkout -q --detach "$MAIN3"
+  begin_task
+  prepare_task_base rev4 true || fail 'unpublished local revision branch blocked'
+  [[ "$REVISION_UNPUBLISHED" == local && "$TASK_START_HEAD" == "$LOCAL4" && "$(git rev-parse HEAD)" == "$LOCAL4" ]] ||
+    fail 'unpublished local branch not continued'
+  task_integrity || fail 'integrity on unpublished local branch'
+  git checkout -q --detach "$MAIN3"
+  begin_task
+  reject prepare_task_base rev-none true
+  [[ "$REVISION_UNPUBLISHED" == missing ]] || fail 'missing branch not classified'
+  ! retryable_failure "Revision branch was never published and worker-0 holds no local copy" || fail 'missing branch retried'
+  [[ "$(receipt_class "Revision branch was never published and worker-0 holds no local copy")" == policy ]] || fail 'missing branch class'
+  ok 'never-pushed revision branches continue from the retained local branch; without one they fail closed, never retried'
 )
 
 
@@ -756,4 +776,30 @@ ok 'operator policy failure stays terminal with precise diagnosis'
   if command git --git-dir="$R" rev-parse -q --verify "refs/heads/$E2E_BRANCH" >/dev/null || grep -q 'pr create' "$CALLS"; then fail 'conflict published'; fi
   [[ -f "$LOOP_STATE_DIR/pending.json" ]] && fail 'conflict left pending receipt'
   ok 'E2E: real conflict with a moved master blocks before gates/publication and names the files'
+
+  # 4) Revision of work that was never pushed: whole branch reviewed, published with an empty lease.
+  e2e_issue 7 'Finish blocked work'
+  command git fetch -q origin main && command git checkout -q --detach origin/main
+  command git checkout -q -b "$E2E_BRANCH"
+  printf 'earlier\n' >earlier.txt && command git add earlier.txt && command git commit -qm 'earlier blocked attempt'
+  EARLIER=$(git rev-parse HEAD)
+  command git checkout -q --detach origin/main
+  E2E_FILE=fix.txt E2E_CHANGE=fix E2E_MASTER_FILE=fourth.txt E2E_MASTER_TEXT='fourth PR'
+  process_revision "$E2E_ISSUE" >"$OUT" 2>&1 || { cat "$OUT"; fail 'unpublished revision blocked'; }
+  grep -q 'was never published; continuing its retained local work' "$OUT" || fail 'unpublished start not logged'
+  PUB7=$(command git --git-dir="$R" rev-parse "refs/heads/$E2E_BRANCH") || fail 'unpublished revision not pushed'
+  [[ "$PUB7" == "$(git rev-parse HEAD)" ]] || fail 'published head differs'
+  git merge-base --is-ancestor "$EARLIER" "$PUB7" || fail 'earlier work not kept'
+  grep -q -- 'pr create' "$CALLS" || fail 'unpublished revision did not open a PR'
+  grep -q -- '--draft' "$CALLS" || fail 'unpublished revision PR not draft'
+  ok 'E2E: revision of never-pushed work continues the local branch and opens a draft PR'
+
+  # 5) Same, but this worker holds no local copy: fail closed, no retry marker, nothing pushed.
+  mv "$LOOP_STATE_DIR/pending.json" "$TMP/e2e-pending-7"
+  e2e_issue 8 'Work held elsewhere'
+  reject process_revision "$E2E_ISSUE" >"$OUT" 2>&1
+  grep -q 'Revision branch was never published and worker-0 holds no local copy' "$LOOP_STATE_DIR/blocked-8.json" || fail 'missing copy reason'
+  if grep -q 'hangar-auto-retry' "$CALLS" || command git --git-dir="$R" rev-parse -q --verify "refs/heads/$E2E_BRANCH" >/dev/null; then
+    fail 'missing copy retried or published'; fi
+  ok 'E2E: revision without any copy of the branch fails closed with a clear reason and no retry'
 )

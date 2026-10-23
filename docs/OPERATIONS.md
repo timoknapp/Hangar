@@ -710,6 +710,9 @@ Use an expected-OID lease if releasing a verified abandoned claim, never an unco
 A failed terminal GitHub write retains ownership and stops admission rather than repeatedly rerunning the implementer.
 If a prepared base no longer matches remote, explicitly rebase/reconcile and rerun verification/review; old evidence cannot be reused.
 Local unpublished revision commits differing from the remote are deliberately blocked from implicit replacement.
+A revision whose branch was never pushed (the earlier attempt was blocked before publication) continues from the branch the blocked worker retained locally.
+The whole branch then goes through verification and the independent review against the base, and is published as a new draft with an empty lease.
+Only that worker holds the work: if another worker claims the revision, it blocks with "Revision branch was never published …" (policy, no automatic retry); re-add `squad:revision`.
 
 ### Mandatory rollout proof for launcher changes
 
