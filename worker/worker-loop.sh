@@ -110,6 +110,8 @@ TASK_START_HEAD=""
 REVISION_BASE_MODE=""
 REVISION_BASE_CONFLICTS=""
 REVISION_MERGE_COMMIT=""
+# Revision branch never pushed (earlier attempt blocked before publication): ""|local|missing.
+REVISION_UNPUBLISHED=""
 LOOP_MAX_BASE_CONFLICTS="${LOOP_MAX_BASE_CONFLICTS:-40}"
 # A red required check or a PR conflict on the exact published head requeues the
 # existing revision flow at most this many times per PR (0 = terminal as before).
@@ -832,7 +834,7 @@ begin_task() {
   BASE_VERIFY_OK=false
   VERIFIED_HEAD="" REVIEWED_HEAD="" REVIEW_BODY_HASH="" FINAL_PR_BODY="" TASK_MASKED_REVIEW=""
   TASK_BASE_SHA="" TASK_BRANCH="" TASK_START_HEAD=""
-  REVISION_BASE_MODE="" REVISION_BASE_CONFLICTS="" REVISION_MERGE_COMMIT=""
+  REVISION_BASE_MODE="" REVISION_BASE_CONFLICTS="" REVISION_MERGE_COMMIT="" REVISION_UNPUBLISHED=""
   TASK_CI_ROUNDS=0 BASE_DRIFT_REASON=""
 }
 
@@ -892,8 +894,20 @@ prepare_task_base() {
   base=$(fetch_task_base) || return 1
   TASK_BASE_SHA="$base"
   if [[ "$revision" == true ]]; then
-    git fetch --no-tags origin "+refs/heads/${branch}:refs/remotes/origin/${branch}" || return 1
-    remote_head=$(git rev-parse --verify "refs/remotes/origin/${branch}^{commit}") || return 1
+    local listed
+    listed=$(git ls-remote --heads origin "refs/heads/${branch}") || return 1
+    if [[ -n "$listed" ]]; then
+      git fetch --no-tags origin "+refs/heads/${branch}:refs/remotes/origin/${branch}" || return 1
+      remote_head=$(git rev-parse --verify "refs/remotes/origin/${branch}^{commit}") || return 1
+    else
+      # Never pushed: an earlier attempt was blocked before publication. Its
+      # retained local branch is the start; the whole branch is reviewed again
+      # and published with an empty lease (the branch must still not exist).
+      git show-ref --verify --quiet "refs/heads/${branch}" || { REVISION_UNPUBLISHED=missing; return 1; }
+      remote_head=$(git rev-parse --verify "refs/heads/${branch}^{commit}") || return 1
+      REVISION_UNPUBLISHED=local
+      log "Revision branch ${branch} was never published; continuing its retained local work"
+    fi
     check_repository_evidence index "$remote_head" || return 1
     # Another PR merged since this revision branch was published. Integrate the
     # fresh base instead of blocking: a clean merge is done here, conflicts are
@@ -2271,10 +2285,15 @@ process_revision() {
     return 1
   fi
   if ! prepare_task_base "$branch_name" true; then
-    cleanup_issue "$issue_num" "$branch_name" "Revision base preparation failed; explicit recovery required"
+    if [[ "$REVISION_UNPUBLISHED" == missing ]]; then
+      cleanup_issue "$issue_num" "$branch_name" "Revision branch was never published and ${WORKER_ID} holds no local copy; only the worker that last blocked this issue can continue it, so re-add squad:revision"
+    else
+      cleanup_issue "$issue_num" "$branch_name" "Revision base preparation failed; explicit recovery required"
+    fi
     return 1
   fi
   revision_remote_oid="$TASK_START_HEAD"
+  [[ "$REVISION_UNPUBLISHED" != local ]] || revision_remote_oid=""
   # Baseline is the pinned fresh base, never the possibly failing revision.
   if ! git checkout --no-overwrite-ignore --detach "$TASK_BASE_SHA" || ! verify_clean_baseline ||
      ! git checkout --no-overwrite-ignore "$branch_name" || ! task_integrity; then
@@ -2287,6 +2306,8 @@ process_revision() {
   fi
   # A worker base-integration merge is itself a publishable revision change.
   revision_start_head="$TASK_START_HEAD"
+  # Unpublished work is itself the change to publish, even without new commits.
+  [[ "$REVISION_UNPUBLISHED" != local ]] || revision_start_head="$TASK_BASE_SHA"
   log "Workspace at $(git log --oneline -1)"
 
   # Fetch the latest comments from the issue (last 10, excluding bot comments)
