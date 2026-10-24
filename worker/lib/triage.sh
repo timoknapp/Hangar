@@ -38,6 +38,17 @@ validate_triage() {
     { echo 'triage JSON failed validation' >&2; return 1; }
 }
 
+# Final main-agent message from the CLI's JSON event stream. Text mode wraps
+# long lines (also inside JSON strings), so it is not a usable transport.
+# Requires a successful terminal result; subagent messages never count.
+triage_final_text() {
+  jq -Rnr '[inputs | fromjson? | select(type == "object")] as $e |
+    if any($e[]; .type == "result" and .exitCode == 0) then
+      [$e[] | select(.type == "assistant.message" and .agentId == null and .data.parentToolCallId == null and
+        ((.data.toolRequests // []) | length) == 0)] | last | .data.content // empty
+    else empty end' "$1"
+}
+
 # The repository companion is data from the pinned base only.
 triage_companion() {
   read_trusted_file .loop/triage.md 2>/dev/null || true
@@ -129,12 +140,12 @@ TRIAGE_JSON_BEGIN
 {\"outcome\":\"implement|needs-info|needs-spec|too-large|park\",\"rationale\":\"...\",\"questions\":[],\"size\":{\"files\":0,\"lines\":0},\"split\":[{\"title\":\"...\",\"acceptance\":\"...\"}]}
 TRIAGE_JSON_END"
   log=$(secure_temp_file "triage-${issue}") || { cleanup_issue "$issue" unknown "Triage could not allocate its output log"; return 1; }
-  local -a args=(-C "$WORKSPACE_DIR" -p "$prompt" --allow-all-tools --silent --stream off
+  local -a args=(-C "$WORKSPACE_DIR" -p "$prompt" --allow-all-tools --silent --stream off --output-format json
     "${COPILOT_COMMON_ARGS[@]}" "${COPILOT_READ_ONLY_ARGS[@]}")
   [[ -z "$COPILOT_MODEL" ]] || args+=(--model "$COPILOT_MODEL")
   run_agent_copilot "$COPILOT_PAT" "${args[@]}" >"$log" 2>&1 || rc=$?
   receipt_add_credits "$log"
-  out=$(cat "$log"); retain_gate_log "$log" triage || true; rm -f "$log"
+  out=$(triage_final_text "$log") || out=""; retain_gate_log "$log" triage || true; rm -f "$log"
   if (( rc != 0 )); then cleanup_issue "$issue" unknown "Triage failed or timed out (exit ${rc})"; return 1; fi
   if ! json=$(validate_triage "$out"); then cleanup_issue "$issue" unknown "Triage output invalid; no implementation attempted"; return 1; fi
   outcome=$(triage_decide "$json" "$issue_json")
