@@ -512,6 +512,10 @@ sequenceDiagram
 | `loop.maxTaskSeconds` | `3600` | Total implementation, verification and correction deadline; pending checks keep at least `LOOP_CHECK_WAIT_SECONDS` (3600) |
 | `loop.maxReviewBytes` | `262144` | Maximum complete review input bytes; oversize blocks |
 | `loop.profileDir` | `""` | Root-owned read-only operator profile, never repository-selected |
+| `loop.triage` | `false` | Read-only triage before implementation; holds unclear, unspecified, oversized or not-worth-it work (`loop:auto` issues are always triaged) |
+| `loop.triageMaxFiles` | `25` | Primary files above which triage holds work as `squad:too-large` |
+| `loop.triageMaxLines` | `1500` | Changed lines above which triage holds work as `squad:too-large` |
+| `loop.triageOverrideLabel` | `"scope:large-approved"` | Human label that lets oversized work through triage |
 
 
 ### Interactive settings in `.env.workers`

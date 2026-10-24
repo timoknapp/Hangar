@@ -84,6 +84,12 @@ generate_compose() {
     echo "Invalid manual creator allowlist or missing explicit approval labels" >&2
     return 1
   }
+  jq -e 'all(.[]; (.loop // {}) as $p |
+    ($p.triage // false | type == "boolean") and
+    ($p.triageMaxFiles // 25 | type == "number" and . >= 1 and . == floor) and
+    ($p.triageMaxLines // 1500 | type == "number" and . >= 1 and . == floor) and
+    ($p.triageOverrideLabel // "scope:large-approved" | type == "string" and test("^[^[:space:],][^,]{0,49}$") and (test("^squad(:|$)") | not)))' \
+    "$REPOS_JSON" >/dev/null || { echo "Invalid triage settings" >&2; return 1; }
 
   # Header
   cat > "$COMPOSE_FILE" <<'HEADER'
@@ -148,6 +154,11 @@ HEADER
     LOOP_IGNORED_WORKFLOWS=$(jq -c --arg w "$WORKER_ID" '.[$w].loop.ignoredWorkflows // []' "$REPOS_JSON")
     local LOOP_PROFILE_DIR
     LOOP_PROFILE_DIR=$(jq -r --arg w "$WORKER_ID" '.[$w].loop.profileDir // ""' "$REPOS_JSON")
+    local LOOP_TRIAGE LOOP_TRIAGE_MAX_FILES LOOP_TRIAGE_MAX_LINES LOOP_TRIAGE_OVERRIDE_LABEL
+    LOOP_TRIAGE=$(jq -r --arg w "$WORKER_ID" '.[$w].loop.triage // false' "$REPOS_JSON")
+    LOOP_TRIAGE_MAX_FILES=$(jq -r --arg w "$WORKER_ID" '.[$w].loop.triageMaxFiles // 25' "$REPOS_JSON")
+    LOOP_TRIAGE_MAX_LINES=$(jq -r --arg w "$WORKER_ID" '.[$w].loop.triageMaxLines // 1500' "$REPOS_JSON")
+    LOOP_TRIAGE_OVERRIDE_LABEL=$(jq -r --arg w "$WORKER_ID" '.[$w].loop.triageOverrideLabel // "scope:large-approved"' "$REPOS_JSON")
 
     cat >> "$COMPOSE_FILE" <<EOF
   squad-${WORKER_ID}:
@@ -197,6 +208,10 @@ HEADER
       - $(yaml_quote "LOOP_CONDITIONAL_WORKFLOWS=${LOOP_CONDITIONAL_WORKFLOWS}")
       - $(yaml_quote "LOOP_IGNORED_WORKFLOWS=${LOOP_IGNORED_WORKFLOWS}")
       - $(yaml_quote "LOOP_PROFILE_DIR=${LOOP_PROFILE_DIR}")
+      - $(yaml_quote "LOOP_TRIAGE=${LOOP_TRIAGE}")
+      - $(yaml_quote "LOOP_TRIAGE_MAX_FILES=${LOOP_TRIAGE_MAX_FILES}")
+      - $(yaml_quote "LOOP_TRIAGE_MAX_LINES=${LOOP_TRIAGE_MAX_LINES}")
+      - $(yaml_quote "LOOP_TRIAGE_OVERRIDE_LABEL=${LOOP_TRIAGE_OVERRIDE_LABEL}")
     ports:
       - $(yaml_quote "${bind_address_value}:\${TTYD_PORT_W${NUM}:-${TTYD_PORT}}:8080")
       - $(yaml_quote "${bind_address_value}:\${SSH_PORT_W${NUM}:-${SSH_PORT}}:22")
