@@ -251,6 +251,10 @@ write_workspace_export() {
   write_workspace_export LOOP_CONDITIONAL_WORKFLOWS "${LOOP_CONDITIONAL_WORKFLOWS:-[]}"
   write_workspace_export LOOP_IGNORED_WORKFLOWS "${LOOP_IGNORED_WORKFLOWS:-[]}"
   write_workspace_export LOOP_PROFILE_DIR "${LOOP_PROFILE_DIR:-}"
+  write_workspace_export LOOP_TRIAGE "${LOOP_TRIAGE:-false}"
+  write_workspace_export LOOP_TRIAGE_MAX_FILES "${LOOP_TRIAGE_MAX_FILES:-25}"
+  write_workspace_export LOOP_TRIAGE_MAX_LINES "${LOOP_TRIAGE_MAX_LINES:-1500}"
+  write_workspace_export LOOP_TRIAGE_OVERRIDE_LABEL "${LOOP_TRIAGE_OVERRIDE_LABEL:-scope:large-approved}"
 } > /home/$SESSION_USER/.workspace_env
 chown "$SESSION_USER":"$SHARED_GROUP" /home/$SESSION_USER/.workspace_env
 chmod 600 /home/$SESSION_USER/.workspace_env

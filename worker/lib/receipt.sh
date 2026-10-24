@@ -37,7 +37,7 @@ receipt_class() {
     "Ready mutation failed/denied"*|"PR returned to draft"*|"PR head or body changed"*)
       echo policy ;;
     "Required remote check failed"*|"PR conflicts with"*) echo code ;;
-    *"failed"*|*"unavailable"*|*"timed out"*|*"Critic"*|*"masks"*|*"byte budget"*|*"drift"*|*"Token refresh"*|\
+    "Triage"*|*"failed"*|*"unavailable"*|*"timed out"*|*"Critic"*|*"masks"*|*"byte budget"*|*"drift"*|*"Token refresh"*|\
     *"interrupted"*|*"could not"*|*"Could not"*|*"Cannot"*|*"uncertain"*|*"deadline exceeded"*)
       echo infrastructure ;;
     *) echo unclassified ;;

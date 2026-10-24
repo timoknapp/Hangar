@@ -55,16 +55,24 @@ decision_context() {
   printf '## Decisions from the issue author or an approver (answers to an earlier stop)\n\n%s\n' "$answers"
 }
 
-# Re-queue issues whose decision request got an answer from an authorized human.
+# Labels that wait for a human answer (triage adds the last three).
+ANSWERABLE_WAIT_LABELS=(squad:needs-decision squad:needs-info squad:needs-spec squad:too-large)
+
+# Re-queue issues whose request got an answer from an authorized human.
+# too-large additionally needs the configured override label (or a split).
 requeue_answered_decisions() {
-  local issues number answers
-  issues=$(gh issue list --repo "$REPO_SLUG" --state open --label squad:needs-decision \
-    --json number,labels --limit 50) || return 0
-  while IFS= read -r number; do
-    [[ "$number" =~ ^[1-9][0-9]*$ ]] || continue
-    answers=$(decision_answers "$number") || continue
-    [[ -n "$answers" ]] || continue
-    gh issue edit "$number" --repo "$REPO_SLUG" --remove-label squad:needs-decision --add-label squad >/dev/null || continue
-    log "Decision answered on #${number}; re-queued"
-  done < <(jq -r '.[] | select([.labels[].name] | index("squad:processing") | not) | .number' <<<"$issues")
+  local label issues number answers
+  for label in "${ANSWERABLE_WAIT_LABELS[@]}"; do
+    issues=$(gh issue list --repo "$REPO_SLUG" --state open --label "$label" \
+      --json number,labels --limit 50) || continue
+    while IFS= read -r number; do
+      [[ "$number" =~ ^[1-9][0-9]*$ ]] || continue
+      answers=$(decision_answers "$number") || continue
+      [[ -n "$answers" ]] || continue
+      gh issue edit "$number" --repo "$REPO_SLUG" --remove-label "$label" --add-label squad >/dev/null || continue
+      log "Answer on #${number} (${label}); re-queued"
+    done < <(jq -r --arg label "$label" --arg override "${LOOP_TRIAGE_OVERRIDE_LABEL:-scope:large-approved}" '.[] |
+      [.labels[].name] as $n | select(($n | index("squad:processing")) == null) |
+      select($label != "squad:too-large" or ($n | index($override)) != null) | .number' <<<"$issues")
+  done
 }

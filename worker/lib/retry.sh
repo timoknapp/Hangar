@@ -19,7 +19,7 @@ retryable_failure() {
     "Infrastructure/verification unavailable"*|"Critic process exited"*|\
     "Critic returned empty output"*|"Critic could not"*|"Cannot read current-head PR checks"*|\
     "PR lookup unavailable"*|"Push failed or remote branch changed"*|\
-    "Worker interrupted"*|"Admission could not finish"*) return 0 ;;
+    "Worker interrupted"*|"Admission could not finish"*|"Triage failed or timed out"*) return 0 ;;
     *) return 1 ;;
   esac
 }

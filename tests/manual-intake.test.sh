@@ -561,6 +561,20 @@ jq '."worker-1".loop.manualIssueCreators=["FIXTURE-HUMAN"]' "$CONFIG" >"$TMP/con
 REPOS_JSON="$CONFIG" bash "$ROOT/tests/config-equivalence.sh"
 ok 'deploy/entrypoint JSON round trip, invalid opt-in fails both validators, shared-queue equivalence with legacy defaults'
 
+# Triage settings: deploy -> Compose -> entrypoint export -> worker validator.
+jq -n '{"worker-1":{owner:"example",repo:"repo",loop:{triage:true,triageMaxFiles:12,triageOverrideLabel:"big-ok"}}}' >"$CONFIG"
+generate_fixture
+for kv in 'LOOP_TRIAGE=true' 'LOOP_TRIAGE_MAX_FILES=12' 'LOOP_TRIAGE_MAX_LINES=1500' 'LOOP_TRIAGE_OVERRIDE_LABEL=big-ok'; do
+  grep -q "\"${kv}\"" "$TMP/compose.yml" || fail "Compose lost ${kv}"
+  grep -q "^  write_workspace_export ${kv%%=*} " "$ROOT/worker/entrypoint.sh" || fail "entrypoint omitted ${kv%%=*}"
+done
+(LOOP_TRIAGE=true LOOP_TRIAGE_MAX_FILES=12 LOOP_TRIAGE_OVERRIDE_LABEL=big-ok; validate_triage_policy)
+for bad in '.triage="yes"' '.triageMaxFiles=0' '.triageMaxLines=1.5' '.triageOverrideLabel="squad:done"' '.triageOverrideLabel="a,b"'; do
+  jq "(.\"worker-1\".loop) |= ($bad)" "$CONFIG" >"$TMP/config2"
+  (CONFIG="$TMP/config2"; reject generate_fixture)
+done
+ok 'triage settings survive deploy/entrypoint; invalid values fail generation'
+
 # Verify the actual command and argv with an operator-profile fixture. Only the
 # root-owned mount validation is substituted; no publisher/Git credentials enter
 # the script, and profile lookup/command escaping/class authorization remain real.

@@ -471,6 +471,26 @@ On the next attempt those answers are given to the implementer and the independe
 The receipt records `no-change` / `decision`; it counts as a question per issue, not as an intervention.
 A crashed or timed-out implementer is still `squad:failed`. To stop waiting, close the issue or remove `squad:needs-decision`.
 
+### Triage (`loop.triage`, opt-in)
+
+With `loop.triage: true`, a read-only model session runs after the claim and the clean baseline, before any implementation.
+It cannot approve or claim anything; it only decides whether approved work can be implemented as written in one pull request:
+
+| Outcome | Label | Next step |
+| --- | --- | --- |
+| `implement` | — | Implementation starts in the same attempt |
+| `needs-info` | `squad:needs-info` | Answer the questions in the issue (author or approver) |
+| `needs-spec` | `squad:needs-spec` | Agree the behaviour in the issue, then reply |
+| `too-large` | `squad:too-large` | Create the proposed parts, or add `triageOverrideLabel` and reply |
+| `park` | `squad:park` | Remove `squad:park` and add `squad` to do it after all |
+
+The publisher validates the output strictly (one `TRIAGE_JSON` block, fixed fields, at most 5 questions); anything else blocks as `infrastructure`, never as `implement`.
+Size limits (`triageMaxFiles`, `triageMaxLines`) are enforced by the publisher from the estimate, not left to the model; `triageOverrideLabel` lets oversized work through.
+Holds remove `squad` and `squad:processing`, keep approval labels and release the claim; answers re-queue exactly like decision stops, and the next triage sees them.
+`loop:auto` issues are always triaged with strict eligibility (bounded bug or chore, known root cause, localized, small, no auth/data/security impact); when in doubt they are parked.
+Revisions and checkpoint resumes skip triage.
+An optional `.loop/triage.md`, read from the pinned base like the review rubric, adds repository notes (size conventions, spec rules); working-tree edits are ignored.
+
 ### Checkpoint resume and reaper
 
 After the implementer produced committed work, the worker writes a private checkpoint (branch, exact HEAD, pinned base, issue contract, summary).
