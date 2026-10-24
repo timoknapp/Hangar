@@ -13,6 +13,7 @@ select_next_unclaimed_issue() {
       and ((label_names | index("squad:done")) == null)
       and ((label_names | index("squad:failed")) == null)
       and ((label_names | index("squad:review-pending")) == null)
+      and ((label_names | index("squad:needs-decision")) == null)
       and (label_names as $names | all($required[]; . as $v | $names | index($v)));
 
     ([.[] | select(eligible and ((label_names | index("loop:auto")) == null))]
@@ -60,7 +61,7 @@ find_manual_issue() {
     [.[] | select(manual_issue) | [.labels[].name] as $names |
       select(($names | index("squad:processing")) == null) |
       select(($names | index("squad:revision")) != null or
-        all(["squad:done","squad:failed","squad:review-pending"][]; . as $v | $names | index($v) | not))] |
+        all(["squad:done","squad:failed","squad:review-pending","squad:needs-decision"][]; . as $v | $names | index($v) | not))] |
     sort_by(.number)
   ' <<<"$issues") || return 1
   [[ "$(jq length <<<"$candidates")" -gt 0 ]] || return 0

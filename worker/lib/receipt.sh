@@ -27,7 +27,7 @@ receipt_add_credits() {
 # metric shows the gap instead of guessing a class.
 receipt_class() {
   case "$1" in
-    "No changes produced"*|"Revision produced no changes"*) echo decision ;;
+    "No changes produced"*|"Revision produced no changes"*|"The implementer stopped without changes"*) echo decision ;;
     "Independent review: open BLOCK findings"*) echo review ;;
     "Verification failed; correction budget exhausted"*) echo code ;;
     "Operator policy blocked"*|"Publication canceled"*|"Issue contract changed"*|\

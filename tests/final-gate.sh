@@ -45,6 +45,7 @@ for f in \
   tests/critic-split.test.sh \
   tests/critic-masked-draft.test.sh \
   tests/agent-scratch.test.sh \
+  tests/needs-decision.test.sh \
   worker/entrypoint.sh \
   worker/git-credential-helper.sh \
   worker/runtime-preflight.sh \
@@ -112,6 +113,7 @@ bash tests/checkpoint-reaper.test.sh
 bash tests/critic-split.test.sh
 bash tests/critic-masked-draft.test.sh
 bash tests/agent-scratch.test.sh
+bash tests/needs-decision.test.sh
 bash tests/issue-evidence.test.sh
 bash tests/quality-lifecycle.test.sh
 bash tests/manual-intake.test.sh

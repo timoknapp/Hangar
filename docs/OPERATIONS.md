@@ -461,6 +461,16 @@ After `LOOP_RETRY_DELAY_SECONDS` (default 600) a worker removes `squad:failed`; 
 Closing the issue, removing `squad` or retrying it by hand cancels the pending automatic retry.
 Deterministic failures (delivery proof for oversized or masked review input, drift, policy, scope, code, review, decision stops) never retry automatically.
 
+### Decision stops (`squad:needs-decision`)
+
+When the implementer deliberately stops without changes (a missing decision, a contradiction in the issue), that is a question, not a failure.
+The worker posts the implementer's redacted handoff, sets `squad:needs-decision`, and removes `squad` and `squad:processing` so external queue dispatchers can move on; approval labels are never touched.
+A reply in the issue from the issue author or a manual creator (`manualIssueCreators`, case-insensitive) re-queues it: the next free worker removes `squad:needs-decision` and adds `squad` again.
+Bot comments and replies to an older decision request never re-queue; unreadable comment history means no re-queue.
+On the next attempt those answers are given to the implementer and the independent review as decisions.
+The receipt records `no-change` / `decision`; it counts as a question per issue, not as an intervention.
+A crashed or timed-out implementer is still `squad:failed`. To stop waiting, close the issue or remove `squad:needs-decision`.
+
 ### Checkpoint resume and reaper
 
 After the implementer produced committed work, the worker writes a private checkpoint (branch, exact HEAD, pinned base, issue contract, summary).

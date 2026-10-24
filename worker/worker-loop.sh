@@ -44,6 +44,8 @@ source "${HANGAR_LIB_DIR}/preflight.sh"
 source "${HANGAR_LIB_DIR}/checkpoint.sh"
 # shellcheck source=worker/lib/critic.sh
 source "${HANGAR_LIB_DIR}/critic.sh"
+# shellcheck source=worker/lib/decision.sh
+source "${HANGAR_LIB_DIR}/decision.sh"
 
 # Trusted object interpretation never honors replacements or cached ancestry.
 # Ignore hooks and reset helpers before using the publisher-only credential helper.
@@ -1652,7 +1654,9 @@ issue_uses_unattended_budget() {
 # operator review, but squad:done keeps them out of worker selection.
 finalize_no_commit_issue() {
   post_no_change_rationale "$1"
-  cleanup_issue "$1" "${TASK_BRANCH:-unknown}" "No changes produced; operator assessment required"
+  # A crashed implementer (non-zero exit) is handled before this point; here it
+  # deliberately stopped, which is a question for a human, not a failure.
+  park_for_decision "$1" "The implementer stopped without changes and needs a decision"
 }
 
 # A deliberate stop (e.g. a missing prerequisite) is only actionable when the
@@ -2076,13 +2080,19 @@ process_issue() {
   if ! refresh_issue_evidence; then
     cleanup_issue "$issue_num" "$branch_name" "Verified issue metadata unavailable; no implementer started"; return 1
   fi
-  local issue_evidence
+  local issue_evidence decisions
   issue_evidence=$(issue_evidence_context) || return 1
+  if ! decisions=$(decision_context "$issue_num"); then
+    cleanup_issue "$issue_num" "$branch_name" "Verified issue metadata unavailable; no implementer started"; return 1
+  fi
+  [[ -z "$decisions" ]] || CURRENT_ISSUE_CONTEXT=$(printf '%s\n\n%s\n' "$CURRENT_ISSUE_CONTEXT" "$decisions")
   prompt="Implement GitHub issue #${issue_num}: ${issue_title}
 
 ## Issue Description
 
 ${issue_body}
+
+${decisions}
 
 ## Implementation Guide
 
@@ -3648,6 +3658,7 @@ main() {
     TASK_DEADLINE=0
     reap_orphans
     process_due_retries
+    requeue_answered_decisions
 
     # Priority applies only on a free worker; pending/current work above is never interrupted.
     local issue_json=""

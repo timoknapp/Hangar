@@ -36,6 +36,10 @@ gh() {
     echo '{"number":335,"state":"CLOSED","title":"Retention design","url":"https://github.com/example/repo/issues/335"}'
   elif [[ "$1 $2" == 'issue comment' ]]; then
     return 0
+  elif [[ "$*" == *'--json author --jq .author.login'* ]]; then
+    echo owner
+  elif [[ "$1" == api && "$*" == *'/issues/336/comments?'* ]]; then
+    echo '[]'
   elif [[ "$1" == api && "$*" == *'/events?'* ]]; then
     case "$MODE" in
       provenance) echo '[]';;
