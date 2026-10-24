@@ -240,6 +240,21 @@ release_issue_claim
 reset_issue 7
 ok 'manual starts with foreign WIP, ready PR and exhausted daily budget; busy worker and foreign ownership protected'
 
+# A revision picked from an older queue snapshot: a sibling already consumed
+# squad:revision (it blocked and set squad:failed). The claim must not start it.
+reset_local; CURRENT_ISSUE=9; CLAIM_REQUIRES_REVISION=true
+jq '.labels += [{name:"squad:failed"}]' "$TMP/issue-9" >"$TMP/i9" && mv "$TMP/i9" "$TMP/issue-9"
+reject claim_issue 9
+reject command git --git-dir="$STORE" show-ref --verify --quiet refs/heads/squad-claims/issue-9
+jq -e '[.labels[].name] | index("squad:processing") == null and index("squad:failed") != null' "$TMP/issue-9" >/dev/null ||
+  fail 'stale revision changed labels'
+# Still requested: admitted normally.
+reset_local; CURRENT_ISSUE=9; CLAIM_REQUIRES_REVISION=true
+jq '.labels |= map(select(.name != "squad:failed")) | .labels += [{name:"squad:revision"}]' "$TMP/issue-9" >"$TMP/i9" && mv "$TMP/i9" "$TMP/issue-9"
+claim_issue 9 || fail 'requested revision not admitted'
+release_issue_claim; CLAIM_REQUIRES_REVISION=false; reset_local; reset_issue 9
+ok 'a revision from a stale queue snapshot is not admitted once a sibling consumed squad:revision'
+
 # Concurrent free workers may claim different manual issues; same issue remains atomic.
 for pair in '7 8' '7 7'; do
   reset_issue 7; reset_issue 8

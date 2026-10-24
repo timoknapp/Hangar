@@ -29,7 +29,7 @@ sanitize_repository_git_config || fail 'sanitizer not idempotent'
 mkdir -p "$AGENT_SCRATCH_DIR/runtime/profile" && printf 'log\n' >"$AGENT_SCRATCH_DIR/verify.log"
 chmod 2700 "$AGENT_SCRATCH_DIR/runtime/profile"
 [[ -z "$(git status --porcelain)" ]] || fail 'scratch output visible to git'
-LOOP_IMPLEMENTER=squad implementer_capability_instructions | grep -q '.hangar-scratch/' || fail 'implementer not told where scratch goes'
+[[ "$(LOOP_IMPLEMENTER=squad implementer_capability_instructions)" == *'.hangar-scratch/'* ]] || fail 'implementer not told where scratch goes'
 ok 'scratch directory is ignored by Git, even with unreadable browser profiles inside'
 
 # A correction whose result cannot be committed reports exactly that.

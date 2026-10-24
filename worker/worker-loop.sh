@@ -112,6 +112,8 @@ REVISION_BASE_CONFLICTS=""
 REVISION_MERGE_COMMIT=""
 # Revision branch never pushed (earlier attempt blocked before publication): ""|local|missing.
 REVISION_UNPUBLISHED=""
+# Set only while process_revision claims: admission must re-confirm squad:revision.
+CLAIM_REQUIRES_REVISION=false
 # Ignored (via .git/info/exclude) workspace directory for agent scratch output.
 AGENT_SCRATCH_DIR=".hangar-scratch"
 LOOP_MAX_BASE_CONFLICTS="${LOOP_MAX_BASE_CONFLICTS:-40}"
@@ -1892,6 +1894,12 @@ create_issue_claim_ref() {
       [[ "$(issue_contract_hash "$issue_json")" != "$ISSUE_CONTRACT_HASH" ]]; then
     release_admission_claim || true; return 1
   fi
+  # The queue snapshot can predate a sibling's terminal block: a revision admitted
+  # from it must still carry squad:revision now, or a human has not asked again.
+  if [[ "$CLAIM_REQUIRES_REVISION" == true ]] && ! issue_has_label "$issue_json" squad:revision; then
+    log "Issue #${issue_num} no longer requests a revision (label consumed by another worker); releasing claim"
+    release_admission_claim || true; return 1
+  fi
   # Apply identical admission budget to scheduled/dispatched work and revisions.
   if [[ "$CURRENT_MANUAL_INTAKE" == false ]] && issue_uses_unattended_budget "$issue_json" && ! reserve_pr_budget; then
     release_admission_claim || true
@@ -2271,11 +2279,14 @@ process_revision() {
 
   # Revisions share the same post-claim winner verification as new work. This
   # prevents sibling workers from force-pushing competing revisions.
+  CLAIM_REQUIRES_REVISION=true
   if ! claim_issue "$issue_num"; then
+    CLAIM_REQUIRES_REVISION=false
     log "Could not claim revision issue #${issue_num}, skipping"
     if [[ -n "$CURRENT_CLAIM_REF" ]]; then cleanup_issue "$issue_num" unknown "Revision admission could not finish" || true; else CURRENT_ISSUE=""; CURRENT_ISSUE_CONTEXT=""; fi
     return 1
   fi
+  CLAIM_REQUIRES_REVISION=false
   gh issue comment "$issue_num" --repo "$REPO_SLUG" \
     --body "🔄 Squad Worker ${WORKER_ID} processing revision for this issue" 2>/dev/null || true
 

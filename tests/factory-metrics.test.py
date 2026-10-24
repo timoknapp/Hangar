@@ -65,3 +65,16 @@ assert r["legacyIssues"] == 2 and r["awaitingAnswer"] == 1 and r["invalidReceipt
 assert r["questionsPerIssue"] == round(2 / 9, 2)
 assert fm.report([])["cleanRate"] is None
 print("PASS: metrics count interventions, questions, legacy fallback and unknown usage")
+
+# --since is attempt time, not issue creation: an old issue attempted after the
+# cut-off counts, and only with its later activity.
+old = {"number": 9, "prMerged": True,
+       "comments": [{"body": marker(outcome="failed", **{"class": "review"}), "bot": True, "at": "2026-09-01T10:00:00Z"},
+                    {"body": marker(outcome="ready"), "bot": True, "at": "2026-10-23T17:35:00Z"}],
+       "events": [{"event": "unlabeled", "label": "squad:failed", "bot": False, "at": "2026-09-02T08:00:00Z"}]}
+untouched = {"number": 10, "prMerged": True,
+             "comments": [{"body": marker(outcome="ready"), "bot": True, "at": "2026-09-01T10:00:00Z"}], "events": []}
+r = fm.report(fm.since_filter([old, untouched], "2026-10-22"))
+assert r["attempted"] == 1 and r["cleanReady"] == 1, r
+assert fm.report(fm.since_filter([old, untouched], "1970-01-01"))["cleanReady"] == 1
+print("PASS: --since counts attempts after the cut-off, including old issues, and drops earlier history")

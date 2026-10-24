@@ -588,7 +588,8 @@ ok 'operator policy failure stays terminal with precise diagnosis'
   [[ -f other.txt && -f feature.txt && "$(git branch --show-current)" == rev ]] || fail 'merged tree/branch'
   task_integrity || fail 'integrity after clean integration'
   finish_revision_base_integration || fail 'clean integration needs no resolution'
-  revision_base_prompt | grep -q 'already done by the worker' || fail 'merged prompt'
+  # Capture first: `grep -q` closes the pipe early, and SIGPIPE in the producer fails under pipefail.
+  [[ "$(revision_base_prompt)" == *'already done by the worker'* ]] || fail 'merged prompt'
   ok 'stale revision without conflicts gets a worker merge of the fresh base'
 
   # Conflicting metadata (e.g. two PRs claiming the same release entry).

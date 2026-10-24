@@ -2,6 +2,8 @@
 """Hangar reliability metrics computed from GitHub alone.
 
 Usage: factory-metrics.py OWNER/REPO [OWNER/REPO ...] [--since YYYY-MM-DD] [--json]
+       --since keeps only worker activity (receipts, labels) from that UTC day on,
+       so an old issue attempted after a rollout counts and its earlier history does not.
        factory-metrics.py --fixture issues.json   (offline; for tests)
 
 Main metric: share of approved, attempted issues that reached a ready pull
@@ -110,9 +112,18 @@ def gh(args: list[str]):
     return json.loads(out.stdout)
 
 
+def since_filter(issues: list[dict], since: str) -> list[dict]:
+    """Keep only activity on/after `since` (YYYY-MM-DD); untimed entries are dropped."""
+    if since <= "1970-01-01":
+        return issues
+    keep = lambda e: (e.get("at") or "") >= since
+    return [{**i, "comments": [c for c in i["comments"] if keep(c)], "events": [e for e in i["events"] if keep(e)]}
+            for i in issues]
+
+
 def fetch(repo: str, since: str) -> list[dict]:
     issues = gh(["issue", "list", "--repo", repo, "--label", "squad", "--state", "all", "--limit", "500",
-                 "--search", f"created:>={since}", "--json", "number"])
+                 "--search", f"updated:>={since}", "--json", "number"])
     result = []
     for item in issues:
         n = item["number"]
@@ -122,9 +133,10 @@ def fetch(repo: str, since: str) -> list[dict]:
         for e in timeline:
             bot = (e.get("actor") or e.get("user") or {}).get("type") == "Bot"
             if e.get("event") == "commented":
-                comments.append({"body": e.get("body", ""), "bot": bot})
+                comments.append({"body": e.get("body", ""), "bot": bot, "at": e.get("created_at")})
             elif e.get("event") in ("labeled", "unlabeled"):
-                events.append({"event": e["event"], "label": e.get("label", {}).get("name"), "bot": bot})
+                events.append({"event": e["event"], "label": e.get("label", {}).get("name"), "bot": bot,
+                               "at": e.get("created_at")})
             elif e.get("event") == "cross-referenced":
                 pr = (e.get("source") or {}).get("issue") or {}
                 merged = merged or bool((pr.get("pull_request") or {}).get("merged_at"))
@@ -143,7 +155,7 @@ def main() -> int:
         with open(a.fixture, encoding="utf-8") as f:
             issues = json.load(f)
     elif a.repos:
-        issues = [i for r in a.repos for i in fetch(r, a.since)]
+        issues = since_filter([i for r in a.repos for i in fetch(r, a.since)], a.since)
     else:
         ap.error("give at least one OWNER/REPO or --fixture")
     r = report(issues)
