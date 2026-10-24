@@ -279,7 +279,7 @@ assert_contains "$(cat "$GH_CALLS_FILE")" "Blocked: prerequisite missing" "no-ch
 assert_contains "$(cat "$GH_CALLS_FILE")" "Fixes issue #7" "rationale cannot close other issues"
 assert_not_contains "$(cat "$GH_CALLS_FILE")" "ghp_abcdefghijklmnop" "rationale redacted"
 assert_not_contains "$(cat "$GH_CALLS_FILE")" "issue close" "no-op does not infer acceptance"
-assert_contains "$(cat "$GH_CALLS_FILE")" "--add-label squad:failed" "no-op visibly blocked"
+assert_contains "$(cat "$GH_CALLS_FILE")" "--add-label squad:needs-decision" "no-op waits for a decision"
 assert_not_contains "$(cat "$GH_CALLS_FILE")" "--add-label squad:done" "failure is not done"
 
 GH_TEST_MODE=publication
