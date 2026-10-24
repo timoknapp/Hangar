@@ -37,6 +37,20 @@ validate_triage "$(printf 'Sure!\n%s\nLet me know.' "$(wrap "$GOOD")")" >/dev/nu
 if validate_triage "$(printf 'TRIAGE_JSON_BEGIN\nSure: %s\nTRIAGE_JSON_END' "$GOOD")" >/dev/null 2>&1; then fail 'prose inside the block accepted'; fi
 ok 'validator: missing, empty, malformed, extra fields, >5 questions, unknown outcome and prose inside the block are rejected'
 
+# Transport: only the final main-agent message of a successful run counts.
+# Regression: text mode wrapped a long rationale inside the JSON string.
+LONG=$(jq -c '.rationale = ("word " * 80)' <<<"$GOOD")
+ev="$TMP/events"
+{ printf 'not json warning line\n'; jq -cn --arg c "$(wrap "$LONG")" '{type:"assistant.message",data:{content:"draft",toolRequests:[{name:"view"}]}},
+    {type:"assistant.message",agentId:"sub-1",data:{content:"subagent"}},
+    {type:"assistant.message",data:{content:$c,toolRequests:[]}}, {type:"result",exitCode:0}'; } >"$ev"
+validate_triage "$(triage_final_text "$ev")" >/dev/null || fail 'long rationale lost in transport'
+jq -c 'select(.type != "result")' "$ev" >"$ev.2" 2>/dev/null || true
+[[ -z "$(triage_final_text "$ev.2")" ]] || fail 'answer accepted without a successful result event'
+jq -cn '{type:"assistant.message",agentId:"sub-1",data:{content:"x",toolRequests:[]}}, {type:"result",exitCode:0}' >"$ev.3"
+[[ -z "$(triage_final_text "$ev.3")" ]] || fail 'subagent message accepted as the answer'
+ok 'transport: final main-agent message of a successful JSON event stream only; long lines survive'
+
 # --- publisher policy: limits and override are enforced here, not by the model ---
 ISSUE='{"number":7,"title":"T","body":"B","state":"OPEN","author":{"login":"Reporter","is_bot":false},"labels":[{"name":"squad"},{"name":"squad:processing"}]}'
 BIG='{"outcome":"implement","rationale":"Fine.","questions":[],"size":{"files":30,"lines":200},"split":[]}'
@@ -64,10 +78,16 @@ gh() {
     *) fail "unexpected gh: $*" ;;
   esac
 }
+# Copilot CLI JSON event stream: the final main-agent message carries the answer.
+events() {
+  jq -cn --arg c "$1" '{type:"user.message",data:{interactionId:"i"}}, {type:"assistant.message",data:{model:"m",content:$c,toolRequests:[]}},
+    {type:"result",exitCode:0}'
+}
 run_agent_copilot() {
   printf '%s\n' "$*" >>"$TMP/model-args"
   [[ " $* " == *' --deny-tool=write '* && " $* " == *' --deny-tool=shell '* ]] || fail 'triage session not read-only'
-  printf '%s' "$MODEL_OUT"; return "$MODEL_RC"
+  [[ " $* " == *' --output-format json '* ]] || fail 'triage must use the JSON event transport'
+  events "$MODEL_OUT"; return "$MODEL_RC"
 }
 claim_owned() { return 0; }
 release_admission_claim() { printf 'release\n' >>"$CALLS"; }
