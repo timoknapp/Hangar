@@ -88,7 +88,7 @@ triage_comment() {
 triage_next_step() {
   case "$1" in
     park) printf 'To do it after all, remove `squad:park` and add `squad` again.' ;;
-    too-large) printf 'Split it, or add %s and reply here to implement it as one change.' "\`${LOOP_TRIAGE_OVERRIDE_LABEL}\`" ;;
+    too-large) printf 'Add %s to have the worker create these parts as ordered issues, split it yourself, or add %s and reply here to implement it as one change.' '`squad:split-approved`' "\`${LOOP_TRIAGE_OVERRIDE_LABEL}\`" ;;
     *) printf 'Reply in this issue (issue author or an approver) to re-queue it.' ;;
   esac
 }
@@ -171,6 +171,7 @@ $(triage_next_step "$outcome") No implementation was attempted.
 
 ${DECISION_MARKER}
 ${TRIAGE_MARKER}
+$(triage_data_marker "$json")
 $(receipt_marker no-change decision)" >/dev/null 2>&1 || log_error "Could not record the triage result for #${issue}"
   release_admission_claim || return 1
   CURRENT_ISSUE="" CURRENT_ISSUE_CONTEXT=""

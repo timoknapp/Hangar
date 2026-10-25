@@ -492,6 +492,17 @@ Holds remove `squad` and `squad:processing`, keep approval labels and release th
 Revisions and checkpoint resumes skip triage.
 An optional `.loop/triage.md`, read from the pinned base like the review rubric, adds repository notes (size conventions, spec rules); working-tree edits are ignored.
 
+### Split on request (`squad:split-approved`)
+
+When triage holds an issue as `squad:too-large`, its comment carries the validated split proposal.
+Adding `squad:split-approved` (by a user in `manualIssueCreators`; the latest label event counts, bots and other users are ignored) lets the next free worker create one child issue per part from that stored proposal, without a new model call.
+Each child links its parent, carries the part's acceptance criteria and exactly the parent's `requiredLabels`: the split approval is the approval for these parts. `scope:large-approved` and status labels are never copied.
+Parts run in order: only one child carries `squad`; the next is released when the previous closes as completed.
+The parent changes to `squad:split` with a list of its parts and is closed after the last part.
+A part closed as not planned stops the chain (`squad:split-stopped`, one comment on the parent); reopen it or add `squad` to a later part to continue.
+Creation is recorded on the parent per part, so an interrupted split resumes without duplicates.
+Repository-specific queues (backlog files, dispatchers) are not edited.
+
 ### Checkpoint resume and reaper
 
 After the implementer produced committed work, the worker writes a private checkpoint (branch, exact HEAD, pinned base, issue contract, summary).

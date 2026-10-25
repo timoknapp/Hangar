@@ -48,6 +48,8 @@ source "${HANGAR_LIB_DIR}/critic.sh"
 source "${HANGAR_LIB_DIR}/decision.sh"
 # shellcheck source=worker/lib/triage.sh
 source "${HANGAR_LIB_DIR}/triage.sh"
+# shellcheck source=worker/lib/split.sh
+source "${HANGAR_LIB_DIR}/split.sh"
 
 # Trusted object interpretation never honors replacements or cached ancestry.
 # Ignore hooks and reset helpers before using the publisher-only credential helper.
@@ -3462,6 +3464,9 @@ ensure_loop_labels() {
     gh label create "squad:needs-spec" --repo "$REPO_SLUG" --color d93f0b --description "Triage: a spec/decision must be agreed first" --force >/dev/null 2>&1 || return 1
     gh label create "squad:too-large" --repo "$REPO_SLUG" --color d93f0b --description "Triage: split proposed; too large for one PR" --force >/dev/null 2>&1 || return 1
     gh label create "squad:park" --repo "$REPO_SLUG" --color cccccc --description "Triage: parked; re-add squad to do it" --force >/dev/null 2>&1 || return 1
+    gh label create "squad:split-approved" --repo "$REPO_SLUG" --color 0e8a16 --description "Human: create the proposed parts as ordered issues" --force >/dev/null 2>&1 || return 1
+    gh label create "squad:split" --repo "$REPO_SLUG" --color c5def5 --description "Split into ordered parts; closes after the last one" --force >/dev/null 2>&1 || return 1
+    gh label create "squad:split-stopped" --repo "$REPO_SLUG" --color cccccc --description "A part was not completed; remaining parts unqueued" --force >/dev/null 2>&1 || return 1
   fi
   if [[ "${LOOP_AUTONOMOUS:-false}" == "true" ]]; then
     gh label create "loop:auto" --repo "$REPO_SLUG" --color "c5def5" \
@@ -3671,6 +3676,7 @@ main() {
     reap_orphans
     process_due_retries
     requeue_answered_decisions
+    process_splits
 
     # Priority applies only on a free worker; pending/current work above is never interrupted.
     local issue_json=""
