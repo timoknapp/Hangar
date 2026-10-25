@@ -153,6 +153,35 @@ log_count=$( { PF_FETCH=1; worker_preflight; worker_preflight; worker_preflight;
 [[ "$log_count" == 1 ]] || fail "unhealthy reason logged $log_count times"
 ok 'an unchanged unhealthy reason is logged once'
 
+# --- Playwright browsers follow the repository lockfile, not the image build ---
+(
+  unset -f fetch_task_base
+  REPO="$TMP/pw"; git init -q -b main "$REPO"; cd "$REPO"
+  git config user.name Fixture; git config user.email fixture@example.invalid
+  mkdir -p web api
+  jq -n '{packages:{"node_modules/playwright-core":{version:"1.64.1"}}}' >web/package-lock.json
+  jq -n '{packages:{}}' >api/package-lock.json
+  jq -n '{packages:{"node_modules/playwright-core":{version:"1.64.1; rm -rf /"}}}' >evil-package-lock.json
+  git add . && git commit -qm base; BASE_PW=$(git rev-parse HEAD)
+  AGENT_HOME="$TMP/agent-home"; mkdir -p "$AGENT_HOME/.cache/ms-playwright"
+  sudo() { shift 3; "$@"; }
+  run_agent_command() { printf '%s\n' "$1" >>"$TMP/installs"; [[ "${PW_FAIL:-}" != 1 ]] || return 1; bash -c "${1#*&& }"; }
+  : >"$TMP/installs"
+  preflight_browsers "$BASE_PW" || fail "browser preflight failed: $PREFLIGHT_REASON"
+  [[ "$(wc -l <"$TMP/installs")" == 1 && "$(cat "$TMP/installs")" == *'playwright-core@1.64.1 -- playwright-core install chromium'* ]] ||
+    fail "expected one install of the lockfile version: $(cat "$TMP/installs")"
+  preflight_browsers "$BASE_PW" || fail 'second preflight failed'
+  [[ "$(wc -l <"$TMP/installs")" == 1 ]] || fail 'installed again despite marker'
+  jq -n '{packages:{"node_modules/playwright-core":{version:"1.65.0"}}}' >web/package-lock.json
+  git commit -qam bump; PW_FAIL=1
+  if preflight_browsers "$(git rev-parse HEAD)"; then fail 'failed install accepted'; fi
+  [[ "$PREFLIGHT_REASON" == *'Playwright 1.65.0'* ]] || fail "reason: $PREFLIGHT_REASON"
+  jq -n '{packages:{}}' >web/package-lock.json; git commit -qam none; : >"$TMP/installs"
+  preflight_browsers "$(git rev-parse HEAD)" || fail 'repository without Playwright blocked'
+  [[ ! -s "$TMP/installs" ]] || fail 'installed without a lockfile version'
+)
+ok 'Playwright browsers match the lockfile version, install once, reject malformed versions and block on install failure'
+
 main_src=$(declare -f main)
 pre=$(grep -n 'worker_preflight' <<<"$main_src" | head -1 | cut -d: -f1)
 proc=$(grep -n 'process_issue "\$issue_json"' <<<"$main_src" | head -1 | cut -d: -f1)

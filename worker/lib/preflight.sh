@@ -44,6 +44,34 @@ preflight_models() {
   PREFLIGHT_MODELS_OK_UNTIL=$(( $(date +%s) + LOOP_MODEL_PROBE_TTL ))
 }
 
+# Playwright browsers must match the repository's lockfile, not the image build:
+# a dependency bump otherwise breaks every UI test with "Executable doesn't
+# exist". Versions come from tracked lockfiles at the fetched base (strictly
+# validated); each missing one is installed once as the coding user (no
+# credentials, same trust as `npm ci` in verification) and then remembered.
+preflight_browsers() {
+  local base="$1" path version marker
+  local -a versions=()
+  while IFS= read -r path; do
+    version=$(git show "${base}:${path}" 2>/dev/null | jq -r '.packages["node_modules/playwright-core"].version // empty' 2>/dev/null) || continue
+    [[ "$version" =~ ^[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}$ ]] && versions+=("$version")
+  done < <(git ls-tree -r --name-only "$base" 2>/dev/null | grep -E '(^|/)package-lock\.json$' | grep -v node_modules | head -20)
+  (( ${#versions[@]} )) || return 0
+  local saved_deadline="$TASK_DEADLINE"
+  for version in $(printf '%s\n' "${versions[@]}" | sort -u); do
+    marker="${AGENT_HOME}/.cache/ms-playwright/.hangar-playwright-${version}"
+    sudo -n -u "$AGENT_USER" /usr/bin/env -i HOME="$AGENT_HOME" PATH="$AGENT_PATH" /usr/bin/test -f "$marker" && continue
+    log "Installing Playwright ${version} browsers for the repository lockfile"
+    TASK_DEADLINE=$(( $(date +%s) + 900 ))
+    if ! run_agent_command "npm exec --yes --package=playwright-core@${version} -- playwright-core install chromium && touch '${marker}'" >/dev/null 2>&1; then
+      TASK_DEADLINE="$saved_deadline"
+      PREFLIGHT_REASON="Playwright ${version} browsers could not be installed"
+      return 1
+    fi
+    TASK_DEADLINE="$saved_deadline"
+  done
+}
+
 preflight_workspace() {
   local free
   free=$(df -Pm "$WORKSPACE_DIR" 2>/dev/null | awk 'NR==2 {print $4}')
@@ -53,7 +81,9 @@ preflight_workspace() {
   sanitize_repository_git_config || { PREFLIGHT_REASON="repository Git metadata rejected"; return 1; }
   workspace_clean || { PREFLIGHT_REASON="workspace is dirty or its evidence is rejected"; return 1; }
   repair_shared_workspace_modes || { PREFLIGHT_REASON="shared workspace permissions cannot be repaired"; return 1; }
-  fetch_task_base >/dev/null || { PREFLIGHT_REASON="cannot fetch ${DEFAULT_BRANCH} into the workspace"; return 1; }
+  local base
+  base=$(fetch_task_base) || { PREFLIGHT_REASON="cannot fetch ${DEFAULT_BRANCH} into the workspace"; return 1; }
+  preflight_browsers "$base"
 }
 
 # Returns 1 when the worker must not claim; logs once per distinct reason.

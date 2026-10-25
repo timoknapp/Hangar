@@ -122,8 +122,10 @@ def since_filter(issues: list[dict], since: str) -> list[dict]:
 
 
 def fetch(repo: str, since: str) -> list[dict]:
-    issues = gh(["issue", "list", "--repo", repo, "--label", "squad", "--state", "all", "--limit", "500",
-                 "--search", f"updated:>={since}", "--json", "number"])
+    # Waiting issues (needs-*, too-large, park) no longer carry `squad`; search them too (comma = OR).
+    labels = "squad,squad:needs-decision,squad:needs-info,squad:needs-spec,squad:too-large,squad:park"
+    issues = gh(["issue", "list", "--repo", repo, "--state", "all", "--limit", "500",
+                 "--search", f"label:{labels} updated:>={since}", "--json", "number"])
     result = []
     for item in issues:
         n = item["number"]

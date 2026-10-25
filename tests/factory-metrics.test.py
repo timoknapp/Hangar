@@ -78,3 +78,9 @@ r = fm.report(fm.since_filter([old, untouched], "2026-10-22"))
 assert r["attempted"] == 1 and r["cleanReady"] == 1, r
 assert fm.report(fm.since_filter([old, untouched], "1970-01-01"))["cleanReady"] == 1
 print("PASS: --since counts attempts after the cut-off, including old issues, and drops earlier history")
+
+# Waiting issues lose `squad` but must still be fetched.
+import inspect
+src = inspect.getsource(fm.fetch)
+assert "squad:needs-decision" in src and "squad:too-large" in src and '"--label", "squad"' not in src, "waiting issues not fetched"
+print("PASS: metrics fetch waiting issues that no longer carry squad")
