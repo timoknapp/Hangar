@@ -501,6 +501,8 @@ Parts run in order: only one child carries `squad`; the next is released when th
 The parent changes to `squad:split` with a list of its parts and is closed after the last part.
 A part closed as not planned stops the chain (`squad:split-stopped`, one comment on the parent); reopen it or add `squad` to a later part to continue.
 Creation is recorded on the parent per part, so an interrupted split resumes without duplicates.
+Parts are manual intake like their parent: they bypass unattended WIP (`maxActiveIssues`) and the daily attempt budget.
+This applies only while the part carries this publisher's part marker, the parent records it, and the parent is open, created by a user in `manualIssueCreators` and still has every `requiredLabels` label set by such a user; otherwise the part falls back to the unattended rules.
 Repository-specific queues (backlog files, dispatchers) are not edited.
 
 ### Checkpoint resume and reaper
