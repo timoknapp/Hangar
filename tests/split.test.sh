@@ -20,7 +20,8 @@ reset_db() { jq -n '{issues:{},next:100,creates:0,refs:{},commits:{}}' >"$DB"; }
 reset_db
 next() { jq -r .next "$DB"; }
 db() { jq "$@" "$DB" >"$DB.t" && mv "$DB.t" "$DB"; }
-new_issue() { db --arg n "$1" --arg t "$2" --argjson l "$3" '.issues[$n]={title:$t,state:"OPEN",stateReason:null,labels:$l,comments:[],events:[]}'; }
+new_issue() { db --arg n "$1" --arg t "$2" --argjson l "$3" --arg a "${4:-worker[bot]}" \
+  '.issues[$n]={title:$t,state:"OPEN",stateReason:null,labels:$l,comments:[],events:[],author:{login:$a,is_bot:($a|endswith("[bot]"))}}'; }
 label_event() { db --arg n "$1" --arg e "$2" --arg l "$3" --arg who "$4" --arg type "$5" \
   '.issues[$n].events += [{event:$e,label:{name:$l},actor:{login:$who,type:$type}}] |
    if $e == "labeled" then .issues[$n].labels += [$l] | .issues[$n].labels |= unique else .issues[$n].labels -= [$l] end'; }
@@ -28,7 +29,7 @@ human_comment() { db --arg n "$1" --arg b "$2" '.issues[$n].comments += [{body:$
 gh() {
   local n op a
   case "$1 $2" in
-    'issue view') n="$3"; jq -c --arg n "$n" '.issues[$n] | {state,stateReason,title,labels:(.labels|map({name:.}))}' "$DB" ;;
+    'issue view') n="$3"; jq -c --arg n "$n" '.issues[$n] | {state,stateReason,title,author,labels:(.labels|map({name:.}))}' "$DB" ;;
     'issue list')
       local want=""; op=""; for a in "$@"; do [[ "$op" != --label ]] || want="$a"; op="$a"; done
       jq -c --arg l "$want" '[.issues | to_entries[] | select(.value.state=="OPEN" and (.value.labels|index($l))) |
@@ -69,7 +70,8 @@ close_child() { db --arg n "$1" --arg r "$2" '.issues[$n].state="CLOSED" | .issu
 
 PROPOSAL='{"outcome":"too-large","rationale":"Big.","questions":[],"size":{"files":15,"lines":2000},"split":[{"title":"Log rotation","acceptance":"Rotate logs. Fixes #9 <!-- x -->"},{"title":"Metrics bounds","acceptance":"Bound metrics."},{"title":"Ledger replay","acceptance":"Replay ledger."}]}'
 setup_parent() {
-  new_issue 7 "Retention phase 3" '["implementation-approved","queue:ready","squad:too-large","scope:large-approved"]'
+  new_issue 7 "Retention phase 3" '["queue:ready","squad:too-large","scope:large-approved"]' Owner
+  label_event 7 labeled implementation-approved Owner User
   gh issue comment 7 --body "triage text
 $(triage_data_marker "$PROPOSAL")"
 }
@@ -124,6 +126,26 @@ jq -e '[.issues["7"].comments[].body | select(contains("\"outcome\":\"no-change\
 [[ -z "$(select_next_unclaimed_issue "$(jq -c '[{number:7,labels:(.issues["7"].labels + ["squad"]|map({name:.}))}]' "$DB")")" ]] || fail 'split parent selectable'
 ok 'children inherit exactly the approval labels; only part 1 is queued; the parent waits as squad:split'
 
+# --- parts of an approved split are manual intake, like their parent ---
+split_child_manual 101 || fail 'approved part not manual'
+child_json=$(jq -c '{number:101,state:"OPEN",author:{login:"worker[bot]",is_bot:true},labels:(.issues["101"].labels|map({name:.}))}' "$DB")
+(LOOP_UNATTENDED_LABELS='["squad"]'; ! is_autonomous_issue "$child_json") || fail 'approved part counted against the unattended budget'
+new_issue 150 "Forged part" '["squad","implementation-approved"]'
+human_comment 150 "${SPLIT_PART_PREFIX}{\"parent\":7,\"index\":1,\"total\":3} -->"
+! split_child_manual 150 || fail 'human-forged part marker accepted'
+gh issue comment 150 --body "${SPLIT_PART_PREFIX}{\"parent\":7,\"index\":9,\"total\":9} -->"
+! split_child_manual 150 || fail 'part not recorded on the parent accepted'
+label_event 7 unlabeled implementation-approved stranger User
+! split_child_manual 101 || fail 'part stayed manual after the parent approval was revoked'
+label_event 7 labeled implementation-approved helper[bot] Bot
+! split_child_manual 101 || fail 'bot-applied parent approval accepted'
+label_event 7 labeled implementation-approved Owner User
+db '.issues["7"].author={login:"stranger",is_bot:false}'
+! split_child_manual 101 || fail 'part of a non-allowlisted parent accepted'
+db '.issues["7"].author={login:"Owner",is_bot:false}'
+split_child_manual 101 || fail 'restored parent not accepted'
+ok 'parts are manual intake only with own markers and a live, human-approved, allowlisted parent'
+
 # --- ordered release; parent closes after the last part ---
 process_splits; if has 102 squad; then fail 'part 2 released while part 1 open'; fi
 close_child 101 COMPLETED; process_splits
@@ -142,10 +164,10 @@ ok 'a part closed as not planned stops the chain once and tells the parent'
 
 # --- guards: parent without approval, missing proposal, empty allowlist ---
 reset_db
-new_issue 8 "No approval" '["squad:too-large"]'; gh issue comment 8 --body "$(triage_data_marker "$PROPOSAL")"
+new_issue 8 "No approval" '["squad:too-large"]' Owner; gh issue comment 8 --body "$(triage_data_marker "$PROPOSAL")"
 label_event 8 labeled squad:split-approved Owner User; process_splits
 [[ "$(next)" == 100 ]] || fail 'split of an unapproved parent'
-new_issue 9 "No proposal" '["implementation-approved","squad:too-large"]'; label_event 9 labeled squad:split-approved Owner User
+new_issue 9 "No proposal" '["implementation-approved","squad:too-large"]' Owner; label_event 9 labeled squad:split-approved Owner User
 process_splits; [[ "$(next)" == 100 ]] || fail 'split without a triage proposal'
 (LOOP_MANUAL_ISSUE_CREATORS='[]'; ! split_authorized 9) || fail 'empty allowlist authorized a split'
 ok 'no split for unapproved parents, without a stored proposal, or without an allowlist'

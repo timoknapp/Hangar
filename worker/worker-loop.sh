@@ -1538,7 +1538,7 @@ manual_approval_authorized() {
 # A nonmanual receipt never gains exemptions after a configuration change.
 manual_intake_still_authorized() {
   [[ "$CURRENT_MANUAL_INTAKE" == false ]] || {
-    is_manual_issue "$1" && manual_approval_authorized "$CURRENT_ISSUE"
+    { is_manual_issue "$1" && manual_approval_authorized "$CURRENT_ISSUE"; } || split_child_manual "$CURRENT_ISSUE"
   }
 }
 
@@ -1646,7 +1646,8 @@ reconcile_closed_wip() {
 
 is_autonomous_issue() {
   is_manual_issue "$1" && return 1
-  issue_uses_unattended_budget "$1"
+  issue_uses_unattended_budget "$1" || return 1
+  ! split_child_manual "$(jq -r '.number // empty' <<<"$1")"
 }
 
 issue_uses_unattended_budget() {
@@ -1878,6 +1879,9 @@ create_issue_claim_ref() {
   ISSUE_CONTRACT_HASH=$(issue_contract_hash "$issue_json") || return 1
   if is_manual_issue "$issue_json"; then
     manual_approval_authorized "$issue_num" || { log_error "Manual issue #${issue_num}: trusted human approval provenance unavailable"; return 1; }
+    CURRENT_MANUAL_INTAKE=true
+  elif split_child_manual "$issue_num"; then
+    log "Issue #${issue_num} is a part of an approved split; admitted as manual intake"
     CURRENT_MANUAL_INTAKE=true
   fi
   if [[ "$CURRENT_MANUAL_INTAKE" == false && "$LOOP_MAX_ACTIVE_ISSUES" == 1 ]]; then
