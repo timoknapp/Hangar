@@ -48,6 +48,7 @@ for f in \
   tests/needs-decision.test.sh \
   tests/triage.test.sh \
   tests/split.test.sh \
+  tests/spec.test.sh \
   worker/entrypoint.sh \
   worker/git-credential-helper.sh \
   worker/runtime-preflight.sh \
@@ -118,6 +119,7 @@ bash tests/agent-scratch.test.sh
 bash tests/needs-decision.test.sh
 bash tests/triage.test.sh
 bash tests/split.test.sh
+bash tests/spec.test.sh
 bash tests/issue-evidence.test.sh
 bash tests/quality-lifecycle.test.sh
 bash tests/manual-intake.test.sh

@@ -255,6 +255,7 @@ write_workspace_export() {
   write_workspace_export LOOP_TRIAGE_MAX_FILES "${LOOP_TRIAGE_MAX_FILES:-25}"
   write_workspace_export LOOP_TRIAGE_MAX_LINES "${LOOP_TRIAGE_MAX_LINES:-1500}"
   write_workspace_export LOOP_TRIAGE_OVERRIDE_LABEL "${LOOP_TRIAGE_OVERRIDE_LABEL:-scope:large-approved}"
+  write_workspace_export LOOP_SPEC_DIR "${LOOP_SPEC_DIR:-specs/issue-{n\}}"
 } > /home/$SESSION_USER/.workspace_env
 chown "$SESSION_USER":"$SHARED_GROUP" /home/$SESSION_USER/.workspace_env
 chmod 600 /home/$SESSION_USER/.workspace_env

@@ -516,6 +516,7 @@ sequenceDiagram
 | `loop.triageMaxFiles` | `25` | Primary files above which triage holds work as `squad:too-large` |
 | `loop.triageMaxLines` | `1500` | Changed lines above which triage holds work as `squad:too-large` |
 | `loop.triageOverrideLabel` | `"scope:large-approved"` | Human label that lets oversized work through triage |
+| `loop.specDir` | `"specs/issue-{n}"` | Directory a `squad:spec` task may change; `{n}` is the issue number |
 
 
 ### Interactive settings in `.env.workers`
