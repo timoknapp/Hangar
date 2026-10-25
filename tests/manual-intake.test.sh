@@ -571,9 +571,17 @@ done
 (LOOP_TRIAGE=true LOOP_TRIAGE_MAX_FILES=12 LOOP_TRIAGE_OVERRIDE_LABEL=big-ok; validate_triage_policy)
 for bad in '.triage="yes"' '.triageMaxFiles=0' '.triageMaxLines=1.5' '.triageOverrideLabel="squad:done"' '.triageOverrideLabel="a,b"'; do
   jq "(.\"worker-1\".loop) |= ($bad)" "$CONFIG" >"$TMP/config2"
-  (CONFIG="$TMP/config2"; reject generate_fixture)
+  reject env REPOS_JSON="$TMP/config2" ENV_FILE="$ENV_FIXTURE" COMPOSE_FILE="$TMP/compose-bad.yml" bash "$ROOT/deploy.sh" generate
 done
-ok 'triage settings survive deploy/entrypoint; invalid values fail generation'
+jq -n '{"worker-1":{owner:"example",repo:"repo",loop:{specDir:"openspec/changes/issue-{n}"}}}' >"$CONFIG"
+generate_fixture
+grep -q '"LOOP_SPEC_DIR=openspec/changes/issue-{n}"' "$TMP/compose.yml" || fail 'Compose lost the spec directory'
+grep -q '^  write_workspace_export LOOP_SPEC_DIR ' "$ROOT/worker/entrypoint.sh" || fail 'entrypoint omitted LOOP_SPEC_DIR'
+for bad in '"specs"' '"/x/{n}"' '"../{n}"' '".git/{n}"' '7'; do
+  jq --argjson b "$bad" '."worker-1".loop.specDir=$b' "$CONFIG" >"$TMP/config2"
+  reject env REPOS_JSON="$TMP/config2" ENV_FILE="$ENV_FIXTURE" COMPOSE_FILE="$TMP/compose-bad.yml" bash "$ROOT/deploy.sh" generate
+done
+ok 'triage and spec settings survive deploy/entrypoint; invalid values fail generation'
 
 # Verify the actual command and argv with an operator-profile fixture. Only the
 # root-owned mount validation is substituted; no publisher/Git credentials enter

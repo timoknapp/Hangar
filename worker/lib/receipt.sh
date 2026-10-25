@@ -31,7 +31,7 @@ receipt_class() {
     "Independent review: open BLOCK findings"*) echo review ;;
     "Verification failed; correction budget exhausted"*) echo code ;;
     "Operator policy blocked"*|"Publication canceled"*|"Issue contract changed"*|\
-    "Remote branch already exists"*|"Revision branch was never published"*|"No explicit required-check policy"*|\
+    "Remote branch already exists"*|"Revision branch was never published"*|"Spec scope:"*|"No explicit required-check policy"*|\
     "Pinned remote-check policy changed"*|"approval or bounded issue contract"*|\
     "required label"*|"issue state is"*|"manual creator"*|"WIP ownership"*|\
     "Ready mutation failed/denied"*|"PR returned to draft"*|"PR head or body changed"*)

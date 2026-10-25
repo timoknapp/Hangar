@@ -505,6 +505,16 @@ Parts are manual intake like their parent: they bypass unattended WIP (`maxActiv
 This applies only while the part carries this publisher's part marker, the parent records it, and the parent is open, created by a user in `manualIssueCreators` and still has every `requiredLabels` label set by such a user; otherwise the part falls back to the unattended rules.
 Repository-specific queues (backlog files, dispatchers) are not edited.
 
+### Spec work type (`squad:spec`)
+
+An approved issue that also carries `squad:spec` runs the normal pipeline with a spec assignment instead of code.
+It skips triage. The implementer writes or updates the spec under `loop.specDir` (default `specs/issue-{n}`, for example `openspec/changes/issue-{n}` for repositories that use OpenSpec), following the repository's conventions or, without them, product (behaviour, testable acceptance criteria, non-goals, open questions) and technical (approach, affected areas, validation, risks) sections.
+A deterministic path guard runs before review: any changed path outside that directory, including renames out of it, blocks as `policy` without automatic retry.
+The independent review adds a spec rubric (testable acceptance, consistency, open questions stay open, no invented decisions).
+The pull request is titled `spec: #n …` and references the issue without closing it: merging the spec is the approval for implementation.
+Later implementation runs for the same issue read the merged spec from the pinned base; unmerged spec branches and working-tree edits are ignored.
+When triage holds an issue as `squad:needs-spec`, adding `squad:spec` re-queues it as a spec task.
+
 ### Checkpoint resume and reaper
 
 After the implementer produced committed work, the worker writes a private checkpoint (branch, exact HEAD, pinned base, issue contract, summary).

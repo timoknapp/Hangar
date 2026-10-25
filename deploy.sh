@@ -90,6 +90,9 @@ generate_compose() {
     ($p.triageMaxLines // 1500 | type == "number" and . >= 1 and . == floor) and
     ($p.triageOverrideLabel // "scope:large-approved" | type == "string" and test("^[^[:space:],][^,]{0,49}$") and (test("^squad(:|$)") | not)))' \
     "$REPOS_JSON" >/dev/null || { echo "Invalid triage settings" >&2; return 1; }
+  jq -e 'all(.[]; ((.loop // {}).specDir // "specs/issue-{n}") | type == "string" and contains("{n}") and
+    test("^[A-Za-z0-9._{}/-]{3,120}$") and (startswith("/") or startswith(".git") or contains("..") or contains("//") | not))' \
+    "$REPOS_JSON" >/dev/null || { echo "Invalid spec directory" >&2; return 1; }
 
   # Header
   cat > "$COMPOSE_FILE" <<'HEADER'
@@ -159,6 +162,8 @@ HEADER
     LOOP_TRIAGE_MAX_FILES=$(jq -r --arg w "$WORKER_ID" '.[$w].loop.triageMaxFiles // 25' "$REPOS_JSON")
     LOOP_TRIAGE_MAX_LINES=$(jq -r --arg w "$WORKER_ID" '.[$w].loop.triageMaxLines // 1500' "$REPOS_JSON")
     LOOP_TRIAGE_OVERRIDE_LABEL=$(jq -r --arg w "$WORKER_ID" '.[$w].loop.triageOverrideLabel // "scope:large-approved"' "$REPOS_JSON")
+    local LOOP_SPEC_DIR
+    LOOP_SPEC_DIR=$(jq -r --arg w "$WORKER_ID" '.[$w].loop.specDir // "specs/issue-{n}"' "$REPOS_JSON")
 
     cat >> "$COMPOSE_FILE" <<EOF
   squad-${WORKER_ID}:
@@ -212,6 +217,7 @@ HEADER
       - $(yaml_quote "LOOP_TRIAGE_MAX_FILES=${LOOP_TRIAGE_MAX_FILES}")
       - $(yaml_quote "LOOP_TRIAGE_MAX_LINES=${LOOP_TRIAGE_MAX_LINES}")
       - $(yaml_quote "LOOP_TRIAGE_OVERRIDE_LABEL=${LOOP_TRIAGE_OVERRIDE_LABEL}")
+      - $(yaml_quote "LOOP_SPEC_DIR=${LOOP_SPEC_DIR}")
     ports:
       - $(yaml_quote "${bind_address_value}:\${TTYD_PORT_W${NUM}:-${TTYD_PORT}}:8080")
       - $(yaml_quote "${bind_address_value}:\${SSH_PORT_W${NUM}:-${SSH_PORT}}:22")

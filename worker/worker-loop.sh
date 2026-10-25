@@ -50,6 +50,8 @@ source "${HANGAR_LIB_DIR}/decision.sh"
 source "${HANGAR_LIB_DIR}/triage.sh"
 # shellcheck source=worker/lib/split.sh
 source "${HANGAR_LIB_DIR}/split.sh"
+# shellcheck source=worker/lib/spec.sh
+source "${HANGAR_LIB_DIR}/spec.sh"
 
 # Trusted object interpretation never honors replacements or cached ancestry.
 # Ignore hooks and reset helpers before using the publisher-only credential helper.
@@ -108,6 +110,8 @@ LOOP_MAX_REVIEW_BYTES="${LOOP_MAX_REVIEW_BYTES:-262144}"
 # Empty = auto-detect next to the installed CLI; "off" disables the preflight.
 LOOP_COPILOT_SECRET_FILTER_MODULE="${LOOP_COPILOT_SECRET_FILTER_MODULE:-}"
 LOOP_PROFILE_DIR="${LOOP_PROFILE_DIR:-}"
+# Spec directory for squad:spec tasks; {n} is the issue number (worker/lib/spec.sh).
+LOOP_SPEC_DIR="${LOOP_SPEC_DIR:-specs/issue-{n\}}"
 # Opt-in read-only triage before implementation (worker/lib/triage.sh).
 LOOP_TRIAGE="${LOOP_TRIAGE:-false}"
 LOOP_STATE_DIR="${LOOP_STATE_DIR:-/home/copilot/.local/share/hangar-loop}"
@@ -828,6 +832,7 @@ init_loop_state() {
   done
   validate_manual_intake_policy || return 1
   validate_triage_policy || return 1
+  validate_spec_policy || return 1
   [[ "$LOOP_CHECK_BACKEND" == checks || "$LOOP_CHECK_BACKEND" == actions ]] || return 1
   select_check_policy '' '' </dev/null >/dev/null || return 1
   [[ "$LOOP_MAX_ACTIVE_ISSUES" =~ ^[01]$ && "$LOOP_MAX_TASK_SECONDS" =~ ^[1-9][0-9]*$ &&
@@ -853,7 +858,7 @@ begin_task() {
   VERIFIED_HEAD="" REVIEWED_HEAD="" REVIEW_BODY_HASH="" FINAL_PR_BODY="" TASK_MASKED_REVIEW=""
   TASK_BASE_SHA="" TASK_BRANCH="" TASK_START_HEAD=""
   REVISION_BASE_MODE="" REVISION_BASE_CONFLICTS="" REVISION_MERGE_COMMIT="" REVISION_UNPUBLISHED=""
-  TASK_CI_ROUNDS=0 BASE_DRIFT_REASON=""
+  TASK_CI_ROUNDS=0 BASE_DRIFT_REASON="" TASK_SPEC=false
 }
 
 workspace_clean() {
@@ -1256,6 +1261,8 @@ ${issue_context}"
   [[ -n "${future_work//[[:space:]]/}" ]] || future_work="None."
 
   issue_reference="Closes #${issue_num}."
+  # A spec never closes its issue: merging it approves the later implementation.
+  [[ "$TASK_SPEC" != true ]] || issue_reference="Refs #${issue_num} (spec; merging approves implementation)."
   if grep -Eqi '(do not|must not|never|no)[ -]*(auto[ -]*)?clos(e|ing)|discussion' <<<"$issue_body"; then
     issue_reference="Refs #${issue_num}."
   fi
@@ -1979,6 +1986,7 @@ process_issue() {
   TASK_KEEP_DRAFT=false
   if grep -Eqi '(draft pull request|draft PR|PR as draft|keep .*draft|must .*draft)' <<<"$issue_body"; then TASK_KEEP_DRAFT=true; fi
   begin_task
+  issue_has_label "$issue_json" "$SPEC_LABEL" && TASK_SPEC=true
   receipt_begin issue
   PR_EXECUTIVE_SUMMARY=""
   log "Processing issue #${issue_num}: ${issue_title}"
@@ -2036,7 +2044,7 @@ process_issue() {
     cleanup_issue "$issue_num" "$branch_name" "Baseline verification or launcher failed; no implementation attempted"
     return 1
   fi
-  run_triage "$issue_num" "$issue_json" || return 1
+  [[ "$TASK_SPEC" == true ]] || run_triage "$issue_num" "$issue_json" || return 1
   if ! reset_task_scratch; then
     cleanup_issue "$issue_num" "$branch_name" "Could not reset task scratch metadata safely"
     return 1
@@ -2098,6 +2106,11 @@ process_issue() {
     cleanup_issue "$issue_num" "$branch_name" "Verified issue metadata unavailable; no implementer started"; return 1
   fi
   [[ -z "$decisions" ]] || CURRENT_ISSUE_CONTEXT=$(printf '%s\n\n%s\n' "$CURRENT_ISSUE_CONTEXT" "$decisions")
+  # Spec tasks get the spec assignment; implementations get a merged spec, if any.
+  local spec_block
+  if [[ "$TASK_SPEC" == true ]]; then spec_block=$(spec_assignment "$issue_num"); else spec_block=$(merged_spec_context "$issue_num"); fi
+  [[ -z "$spec_block" ]] || CURRENT_ISSUE_CONTEXT=$(printf '%s\n\n%s\n' "$CURRENT_ISSUE_CONTEXT" "$spec_block")
+  decisions=$(printf '%s\n\n%s' "$decisions" "$spec_block")
   prompt="Implement GitHub issue #${issue_num}: ${issue_title}
 
 ## Issue Description
@@ -2295,6 +2308,7 @@ process_revision() {
   TASK_KEEP_DRAFT=false
   if grep -Eqi '(draft pull request|draft PR|PR as draft|keep .*draft|must .*draft)' <<<"$issue_body"; then TASK_KEEP_DRAFT=true; fi
   begin_task
+  issue_has_label "$issue_json" "$SPEC_LABEL" && TASK_SPEC=true
   receipt_begin revision
   PR_EXECUTIVE_SUMMARY=""
   log "Processing revision for issue #${issue_num}: ${issue_title}"
@@ -2642,7 +2656,8 @@ publish_task() {
   fi
   pr_url="$existing"
   if [[ -z "$pr_url" ]]; then
-    if ! pr_url=$(gh pr create --repo "$REPO_SLUG" --title "fix: #${issue} ${title}" \
+    local kind=fix; [[ "$TASK_SPEC" != true ]] || kind=spec
+    if ! pr_url=$(gh pr create --repo "$REPO_SLUG" --title "${kind}: #${issue} ${title}" \
       --body "$FINAL_PR_BODY" --head "$branch" --base "$DEFAULT_BRANCH" --draft); then
       # Never repeat a possibly successful create. Read back once, otherwise block.
       pr_url=$(lookup_pr_url_for_branch "$branch") || pr_url=""
@@ -3334,6 +3349,10 @@ run_quality_gates() {
     task_integrity || { GATE_NOTE="Branch or ancestry drift"; return 1; }
     TASK_STAGE=verify
     run_verify_with_corrections || return 1
+    if [[ "$TASK_SPEC" == true ]] && ! spec_paths_ok "$CURRENT_ISSUE"; then
+      GATE_NOTE="Spec scope: ${SPEC_GUARD_PATH:-a changed path} is outside $(spec_dir "$CURRENT_ISSUE")/; spec tasks may only change the spec directory"
+      return 1
+    fi
     summary_complete || { GATE_NOTE="Missing/incomplete five-heading summary; review blocked"; return 1; }
     build_final_pr_body || return 1
     if [[ "$LOOP_CRITIC" != true ]]; then
@@ -3470,6 +3489,7 @@ ensure_loop_labels() {
     gh label create "squad:park" --repo "$REPO_SLUG" --color cccccc --description "Triage: parked; re-add squad to do it" --force >/dev/null 2>&1 || return 1
     gh label create "squad:split-approved" --repo "$REPO_SLUG" --color 0e8a16 --description "Human: create the proposed parts as ordered issues" --force >/dev/null 2>&1 || return 1
     gh label create "squad:split" --repo "$REPO_SLUG" --color c5def5 --description "Split into ordered parts; closes after the last one" --force >/dev/null 2>&1 || return 1
+    gh label create "squad:spec" --repo "$REPO_SLUG" --color 5319e7 --description "Write a spec (no code); merging the spec PR approves implementation" --force >/dev/null 2>&1 || return 1
     gh label create "squad:split-stopped" --repo "$REPO_SLUG" --color cccccc --description "A part was not completed; remaining parts unqueued" --force >/dev/null 2>&1 || return 1
   fi
   if [[ "${LOOP_AUTONOMOUS:-false}" == "true" ]]; then
@@ -3681,6 +3701,7 @@ main() {
     process_due_retries
     requeue_answered_decisions
     process_splits
+    requeue_spec_requests
 
     # Priority applies only on a free worker; pending/current work above is never interrupted.
     local issue_json=""

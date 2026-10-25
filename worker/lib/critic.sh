@@ -456,6 +456,7 @@ run_critic() {
   task_integrity || { CRITIC_FEEDBACK="Branch or ancestry drift"; return 1; }
   REVIEWED_HEAD=$(git rev-parse HEAD) || return 1
   rubric=$(resolve_critic_rubric) || { CRITIC_FEEDBACK="Trusted review context unavailable/incomplete"; return 1; }
+  [[ "${TASK_SPEC:-false}" != true ]] || rubric=$(printf '%s\n\n%s\n' "$(spec_rubric)" "$rubric")
   base_ref=$(trusted_base_ref)
   # Binary files (screenshots) are bound by full blob IDs, not base85 payloads:
   # a PNG patch can be thousands of unreadable lines that exhaust the critic's
