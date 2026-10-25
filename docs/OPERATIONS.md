@@ -515,6 +515,20 @@ The pull request is titled `spec: #n …` and references the issue without closi
 Later implementation runs for the same issue read the merged spec from the pinned base; unmerged spec branches and working-tree edits are ignored.
 When triage holds an issue as `squad:needs-spec`, adding `squad:spec` re-queues it as a spec task.
 
+### Learning loop (`loop.learning`, opt-in)
+
+[ADR 0001](adr/0001-factory-direction.md) enables this only after the main metric stays above 60 %; the operator decides.
+With `loop.learning: true`, an idle worker looks at the last 7 days of this repository once a week and collects human corrections of the factory's own work:
+- human commits on an agent PR before merge;
+- agent PRs closed without merge;
+- human replies on an agent PR after the worker's last comment;
+- human triage overrides (`scope:large-approved`, `squad:spec`).
+
+Bots, older items, other branches and earlier learning PRs are ignored.
+Only a kind seen on at least two different PRs or issues counts; one-off signals produce nothing.
+For repeated signals, a read-only session proposes the full new content of `.loop/review-rubric.md` and/or `.loop/triage.md` as validated JSON; the publisher writes only those files, a path guard checks the commit before push, and the result is a draft pull request (`squad/learning-<date>`, at most one open at a time) for a human to merge.
+It never edits code, the operator profile or the core rubric.
+
 ### Checkpoint resume and reaper
 
 After the implementer produced committed work, the worker writes a private checkpoint (branch, exact HEAD, pinned base, issue contract, summary).

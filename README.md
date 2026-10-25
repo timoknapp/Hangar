@@ -517,6 +517,7 @@ sequenceDiagram
 | `loop.triageMaxLines` | `1500` | Changed lines above which triage holds work as `squad:too-large` |
 | `loop.triageOverrideLabel` | `"scope:large-approved"` | Human label that lets oversized work through triage |
 | `loop.specDir` | `"specs/issue-{n}"` | Directory a `squad:spec` task may change; `{n}` is the issue number |
+| `loop.learning` | `false` | Weekly draft PR that may only change `.loop/review-rubric.md` and `.loop/triage.md`, from repeated human corrections |
 
 
 ### Interactive settings in `.env.workers`
