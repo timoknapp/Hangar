@@ -451,7 +451,8 @@ Before every claim a worker checks its own health and claims nothing while unhea
 - free disk space in the workspace (`LOOP_MIN_FREE_MB`, default 2048),
 - clean workspace, safe Git metadata, repairable shared directory modes and a working `git fetch` of the default branch,
 - the installed Copilot CLI equals the version pinned at image build (`/etc/hangar-copilot-cli-version`, from the `COPILOT_CLI_VERSION` build argument; images without the file skip this check), unless `AUTO_UPDATE_CLI=true`,
-- implementer and critic models answer a minimal read-only probe (cached for `LOOP_MODEL_PROBE_TTL` seconds, default 3600).
+- implementer and critic models answer a minimal read-only probe (cached for `LOOP_MODEL_PROBE_TTL` seconds, default 3600),
+- Playwright browsers match every `node_modules/playwright-core` version in tracked `package-lock.json` files at the fetched base; a missing version is installed once as the coding user (`npm exec playwright-core install chromium`, no credentials) and remembered in the browser cache; a failed install blocks claiming.
 
 An unhealthy worker logs each distinct reason once and leaves the issue untouched for other workers.
 
