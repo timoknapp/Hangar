@@ -16,7 +16,7 @@ mkdir -p "$WORKSPACE_DIR"
 GH_APP_ID=4242 LOOP_MANUAL_ISSUE_CREATORS='["Owner"]' LOOP_REQUIRED_LABELS='["implementation-approved"]'
 # Counters live in the DB: `gh issue create` runs inside $(...) subshells.
 DB="$TMP/db.json"; CREATE_FAIL_AT=0
-reset_db() { jq -n '{issues:{},next:100,creates:0}' >"$DB"; }
+reset_db() { jq -n '{issues:{},next:100,creates:0,refs:{},commits:{}}' >"$DB"; }
 reset_db
 next() { jq -r .next "$DB"; }
 db() { jq "$@" "$DB" >"$DB.t" && mv "$DB.t" "$DB"; }
@@ -45,12 +45,24 @@ gh() {
       for a in "${@:3}"; do case "$op" in --title) title="$a";; --label) labels=$(jq -c --arg l "$a" '. + [$l]' <<<"$labels");; esac; op="$a"; done
       db '.next += 1'; n=$(next); new_issue "$n" "$title" "$labels"; echo "https://github.com/example/repo/issues/$n" ;;
     'issue close') n="$3"; db --arg n "$n" '.issues[$n].state="CLOSED" | .issues[$n].stateReason="COMPLETED"' ;;
+    'api --method')
+      local path="" ref="" sha="" msg=""; for a in "$@"; do case "$a" in repos/*) path="$a";; ref=*) ref="${a#ref=}";; sha=*) sha="${a#sha=}";; message=*) msg="${a#message=}";; esac; done
+      if [[ "$path" == */git/commits ]]; then
+        sha="c$(jq '.commits | length' "$DB")"; db --arg s "$sha" --arg m "$msg" --arg d "$(date -u +%FT%TZ)" '.commits[$s]={message:$m,date:$d}'; echo "$sha"
+      else jq -e --arg r "$ref" '.refs | has($r) | not' "$DB" >/dev/null || return 1; db --arg r "$ref" --arg s "$sha" '.refs[$r]=$s'; fi ;;
+    'api repos/'*)
+      if [[ "$2" == */git/ref/heads/main ]]; then echo base
+      elif [[ "$2" == */git/ref/* ]]; then jq -er --arg r "refs/${2#*/git/ref/}" '.refs[$r] // empty' "$DB"
+      elif [[ "$2" == */git/commits/base ]]; then echo tree
+      elif [[ "$2" == */git/commits/* ]]; then jq -r --arg s "${2##*/}" '.commits[$s] | [(.message | fromjson | .worker), .date] | @tsv' "$DB"
+      else fail "unexpected gh api: $*"; fi ;;
     'api --paginate')
       n=$(sed -E 's#.*/issues/([0-9]+)/.*#\1#' <<<"$3")
       if [[ "$3" == *'/comments?'* ]]; then jq -c --arg n "$n" '.issues[$n].comments' "$DB"; else jq -c --arg n "$n" '.issues[$n].events' "$DB"; fi ;;
     *) fail "unexpected gh: $*" ;;
   esac
 }
+release_owned_ref() { jq -e --arg r "$1" --arg s "$2" '.refs[$r] == $s' "$DB" >/dev/null || return 1; db --arg r "$1" 'del(.refs[$r])'; }
 labels() { jq -c --arg n "$1" '.issues[$n].labels | sort' "$DB"; }
 has() { jq -e --arg n "$1" --arg l "$2" '.issues[$n].labels | index($l)' "$DB" >/dev/null; }
 close_child() { db --arg n "$1" --arg r "$2" '.issues[$n].state="CLOSED" | .issues[$n].stateReason=$r'; }
@@ -80,11 +92,19 @@ process_splits
 label_event 7 unlabeled squad:split-approved stranger User; label_event 7 labeled squad:split-approved owner User
 ok 'bots and non-allowlisted users never trigger a split'
 
+# --- one splitter per parent: a fresh foreign lock blocks, the work waits ---
+db '.refs["refs/heads/squad-claims/split-7"]="cX" | .commits["cX"]={message:"{\"worker\":\"worker-9\",\"split\":\"7\"}",date:(now|todate)}'
+process_splits
+[[ "$(next)" == 100 ]] || fail 'split ran while another worker held the lock'
+db 'del(.refs["refs/heads/squad-claims/split-7"])'
+ok 'a split lock held by another worker blocks concurrent splitting'
+
 # --- crash mid-creation, then resume without duplicates ---
 CREATE_FAIL_AT=2
 process_splits
 [[ "$(next)" == 101 ]] || fail "expected one child before the crash, got $(( $(next) - 100 ))"
 CREATE_FAIL_AT=0
+jq -e '.refs | length == 0' "$DB" >/dev/null || fail 'lock not released after a failed split'
 process_splits
 [[ "$(next)" == 103 ]] || fail "resume created $(( $(next) - 100 )) children instead of 3 in total"
 process_splits
