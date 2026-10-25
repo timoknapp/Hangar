@@ -69,12 +69,53 @@ split_child_body() {
     "Split from #\($parent) on request; the parts run in order. Scope is limited to this part."' <<<"$part"
 }
 
+# One splitter per parent across workers: an atomic ref create is the lock.
+# The holder (or a lock older than SPLIT_LOCK_STALE seconds, e.g. a crashed
+# worker) proceeds; markers on the parent make the work itself idempotent.
+SPLIT_LOCK_STALE="${SPLIT_LOCK_STALE:-1800}"
+SPLIT_LOCK_REF="" SPLIT_LOCK_OID=""
+split_lock() {
+  local issue="$1" ref="refs/heads/squad-claims/split-$1" base tree oid owner when
+  SPLIT_LOCK_REF="" SPLIT_LOCK_OID=""
+  base=$(gh api "repos/${REPO_SLUG}/git/ref/heads/${DEFAULT_BRANCH}" --jq '.object.sha') || return 1
+  tree=$(gh api "repos/${REPO_SLUG}/git/commits/${base}" --jq '.tree.sha') || return 1
+  oid=$(gh api --method POST "repos/${REPO_SLUG}/git/commits" -f tree="$tree" -f "parents[]=$base" \
+    -f message="$(jq -cn --arg w "$WORKER_ID" --arg i "$issue" '{worker:$w,split:$i}')" --jq .sha) || return 1
+  if ! gh api --method POST "repos/${REPO_SLUG}/git/refs" -f ref="$ref" -f sha="$oid" >/dev/null 2>&1; then
+    owner=$(gh api "repos/${REPO_SLUG}/git/ref/${ref#refs/}" --jq '.object.sha') || return 1
+    when=$(gh api "repos/${REPO_SLUG}/git/commits/${owner}" --jq '[(.message | fromjson? | .worker // ""), .committer.date] | @tsv') || return 1
+    if [[ "${when%%$'\t'*}" != "$WORKER_ID" ]] &&
+       (( $(date +%s) - $(date -d "${when#*$'\t'}" +%s 2>/dev/null || echo 0) < SPLIT_LOCK_STALE )); then
+      return 1
+    fi
+    # Own (resume after a crash) or stale: take it over with a lease on the seen value.
+    release_owned_ref "$ref" "$owner" || return 1
+    gh api --method POST "repos/${REPO_SLUG}/git/refs" -f ref="$ref" -f sha="$oid" >/dev/null 2>&1 || return 1
+  fi
+  SPLIT_LOCK_REF="$ref" SPLIT_LOCK_OID="$oid"
+}
+split_unlock() {
+  [[ -n "$SPLIT_LOCK_REF" ]] || return 0
+  release_owned_ref "$SPLIT_LOCK_REF" "$SPLIT_LOCK_OID" || log_error "Split lock ${SPLIT_LOCK_REF} not released; it expires"
+  SPLIT_LOCK_REF="" SPLIT_LOCK_OID=""
+}
+
 # Create missing children (idempotent), then record the parent state.
 perform_split() {
+  local issue="$1"
+  split_lock "$issue" || return 0   # another worker is splitting it
+  local rc=0
+  split_locked "$issue" || rc=$?
+  split_unlock
+  return "$rc"
+}
+
+split_locked() {
   local issue="$1" issue_json comments proposal recorded total i part title body child label created=0
   local -a args=()
+  # Re-read under the lock: a sibling may already have finished this split.
   issue_json=$(gh issue view "$issue" --repo "$REPO_SLUG" --json state,title,labels) || return 1
-  jq -e '.state == "OPEN"' <<<"$issue_json" >/dev/null || return 0
+  jq -e --arg l "$SPLIT_LABEL" '.state == "OPEN" and ([.labels[].name] | index($l))' <<<"$issue_json" >/dev/null || return 0
   split_authorized "$issue" || { log "Split of #${issue} not authorized; ignoring ${SPLIT_LABEL}"; return 0; }
   comments=$(split_comments "$issue") || return 1
   proposal=$(split_proposal "$comments") || return 1
