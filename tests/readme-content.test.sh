@@ -3,6 +3,7 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 README="$ROOT/README.md"
+OPERATIONS="$ROOT/docs/OPERATIONS.md"
 MIGRATION_GUIDE="$ROOT/docs/MIGRATING-FROM-COPILOT-WORKSTATION.md"
 
 fail() {
@@ -32,7 +33,16 @@ for scenario in \
   'Scenario F — Autonomous budget exhausted' \
   'Scenario G — Human requests a revision' \
   'Scenario H — Critic unavailable'; do
-  grep -Fq "$scenario" "$README" || fail "missing README diagram: $scenario"
+  grep -Fq "$scenario" "$OPERATIONS" || fail "missing OPERATIONS diagram: $scenario"
+done
+grep -Fq 'docs/OPERATIONS.md#14-pipeline-scenarios' "$README" \
+  || fail "README must link the pipeline scenarios"
+
+# The factory positioning and the GitHub-facing controls stay discoverable.
+for phrase in 'software factory' 'Governed autonomy' '## 🏭 How the factory works' \
+  '### What you do on GitHub' '## Why Hangar?' 'squad:needs-decision' 'squad:split-approved' \
+  'squad:spec' 'scope:large-approved' 'tools/factory-metrics.py' 'loop.learning'; do
+  grep -Fq "$phrase" "$README" || fail "README must mention: $phrase"
 done
 
 # shellcheck disable=SC2016 # Backticks are intentional Markdown delimiters.
@@ -41,41 +51,47 @@ grep -Fq 'Human-created `squad` issues do not' "$README" \
 grep -Fq 'configured unattended attempts, including revisions' "$README" \
   || fail "README control table must describe configurable unattended budget"
 
-mermaid_count=$(awk '
-  {
-    line = $0
-    sub(/^[[:space:]]+/, "", line)
-    if (line == "```mermaid") count++
-  }
-  END { print count + 0 }
-' "$README")
-[[ "$mermaid_count" -eq 11 ]] \
-  || fail "expected 11 Mermaid diagrams, found $mermaid_count"
+check_mermaid() {
+  local file="$1" expected="$2" count
+  count=$(awk '
+    {
+      line = $0
+      sub(/^[[:space:]]+/, "", line)
+      if (line == "```mermaid") count++
+    }
+    END { print count + 0 }
+  ' "$file")
+  [[ "$count" -eq "$expected" ]] \
+    || fail "expected $expected Mermaid diagrams in $file, found $count"
 
-# Mermaid sequence keywords are case-insensitive. A participant named `Loop`
-# collides with the `loop` block keyword and caused GitHub's parser to reject the
-# original flight-pipeline diagram.
-if grep -Eqi '^[[:space:]]*participant[[:space:]]+(loop|alt|opt|par|critical|break|rect|end)([[:space:]]|$)' "$README"; then
-  fail "README uses a reserved Mermaid keyword as a participant identifier"
-fi
+  # Mermaid sequence keywords are case-insensitive. A participant named `Loop`
+  # collides with the `loop` block keyword and caused GitHub's parser to reject the
+  # original flight-pipeline diagram.
+  if grep -Eqi '^[[:space:]]*participant[[:space:]]+(loop|alt|opt|par|critical|break|rect|end)([[:space:]]|$)' "$file"; then
+    fail "$file uses a reserved Mermaid keyword as a participant identifier"
+  fi
 
-awk '
-  {
-    line = $0
-    sub(/^[[:space:]]+/, "", line)
-  }
-  line == "```mermaid" {
-    if (in_mermaid) exit 2
-    in_mermaid = 1
-    next
-  }
-  in_mermaid && line == "```" {
-    in_mermaid = 0
-    closed++
-  }
-  END {
-    if (in_mermaid || closed != 11) exit 3
-  }
-' "$README" || fail "README has an unbalanced Mermaid code fence"
+  awk -v expected="$expected" '
+    {
+      line = $0
+      sub(/^[[:space:]]+/, "", line)
+    }
+    line == "```mermaid" {
+      if (in_mermaid) exit 2
+      in_mermaid = 1
+      next
+    }
+    in_mermaid && line == "```" {
+      in_mermaid = 0
+      closed++
+    }
+    END {
+      if (in_mermaid || closed != expected) exit 3
+    }
+  ' "$file" || fail "$file has an unbalanced Mermaid code fence"
+}
 
-echo "README content and diagram inventory: PASS (${mermaid_count} Mermaid diagrams)"
+check_mermaid "$README" 2
+check_mermaid "$OPERATIONS" 10
+
+echo "README content and diagram inventory: PASS (2 README + 10 OPERATIONS Mermaid diagrams)"
