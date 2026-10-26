@@ -52,6 +52,8 @@ source "${HANGAR_LIB_DIR}/triage.sh"
 source "${HANGAR_LIB_DIR}/split.sh"
 # shellcheck source=worker/lib/spec.sh
 source "${HANGAR_LIB_DIR}/spec.sh"
+# shellcheck source=worker/lib/learning.sh
+source "${HANGAR_LIB_DIR}/learning.sh"
 
 # Trusted object interpretation never honors replacements or cached ancestry.
 # Ignore hooks and reset helpers before using the publisher-only credential helper.
@@ -110,6 +112,8 @@ LOOP_MAX_REVIEW_BYTES="${LOOP_MAX_REVIEW_BYTES:-262144}"
 # Empty = auto-detect next to the installed CLI; "off" disables the preflight.
 LOOP_COPILOT_SECRET_FILTER_MODULE="${LOOP_COPILOT_SECRET_FILTER_MODULE:-}"
 LOOP_PROFILE_DIR="${LOOP_PROFILE_DIR:-}"
+# Opt-in weekly learning proposals for .loop rubric files (worker/lib/learning.sh).
+LOOP_LEARNING="${LOOP_LEARNING:-false}"
 # Spec directory for squad:spec tasks; {n} is the issue number (worker/lib/spec.sh).
 LOOP_SPEC_DIR="${LOOP_SPEC_DIR:-specs/issue-{n\}}"
 # Opt-in read-only triage before implementation (worker/lib/triage.sh).
@@ -833,6 +837,7 @@ init_loop_state() {
   validate_manual_intake_policy || return 1
   validate_triage_policy || return 1
   validate_spec_policy || return 1
+  validate_learning_policy || return 1
   [[ "$LOOP_CHECK_BACKEND" == checks || "$LOOP_CHECK_BACKEND" == actions ]] || return 1
   select_check_policy '' '' </dev/null >/dev/null || return 1
   [[ "$LOOP_MAX_ACTIVE_ISSUES" =~ ^[01]$ && "$LOOP_MAX_TASK_SECONDS" =~ ^[1-9][0-9]*$ &&
@@ -3718,6 +3723,8 @@ main() {
       # the next work item from the repo's goal source; otherwise just idle.
       if [[ "${LOOP_AUTONOMOUS:-false}" == "true" ]] && pr_budget_remaining; then
         generate_work || true
+      elif [[ "$LOOP_LEARNING" == true ]] && learning_due; then
+        run_learning || log_error "Learning run failed; retried next week"
       else
         log "No issues to process, sleeping ${POLL_INTERVAL}s..."
       fi

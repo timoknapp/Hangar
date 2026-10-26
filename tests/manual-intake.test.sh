@@ -581,7 +581,13 @@ for bad in '"specs"' '"/x/{n}"' '"../{n}"' '".git/{n}"' '7'; do
   jq --argjson b "$bad" '."worker-1".loop.specDir=$b' "$CONFIG" >"$TMP/config2"
   reject env REPOS_JSON="$TMP/config2" ENV_FILE="$ENV_FIXTURE" COMPOSE_FILE="$TMP/compose-bad.yml" bash "$ROOT/deploy.sh" generate
 done
-ok 'triage and spec settings survive deploy/entrypoint; invalid values fail generation'
+jq -n '{"worker-1":{owner:"example",repo:"repo",loop:{learning:true}}}' >"$CONFIG"
+generate_fixture
+grep -q '"LOOP_LEARNING=true"' "$TMP/compose.yml" || fail 'Compose lost the learning setting'
+grep -q '^  write_workspace_export LOOP_LEARNING ' "$ROOT/worker/entrypoint.sh" || fail 'entrypoint omitted LOOP_LEARNING'
+jq '."worker-1".loop.learning="yes"' "$CONFIG" >"$TMP/config2"
+reject env REPOS_JSON="$TMP/config2" ENV_FILE="$ENV_FIXTURE" COMPOSE_FILE="$TMP/compose-bad.yml" bash "$ROOT/deploy.sh" generate
+ok 'triage, spec and learning settings survive deploy/entrypoint; invalid values fail generation'
 
 # Verify the actual command and argv with an operator-profile fixture. Only the
 # root-owned mount validation is substituted; no publisher/Git credentials enter
