@@ -194,21 +194,34 @@ advance_split() {
 # this publisher's part marker on the child, the matching record on the parent,
 # and a parent that is open, created by an allowlisted human and still carries
 # every required approval label with human provenance. Fails closed.
-split_child_manual() {
-  local child="$1" comments parent pjson
+split_child_evidence() {
+  local child="$1" comments parent pjson part approvals
   [[ "$child" =~ ^[1-9][0-9]*$ && "$(jq length <<<"$LOOP_MANUAL_ISSUE_CREATORS")" -gt 0 ]] || return 1
   comments=$(split_comments "$child") || return 1
-  parent=$(split_own <<<"$comments" | jq -r --arg p "$SPLIT_PART_PREFIX" '
+  part=$(split_own <<<"$comments" | jq -ce --arg p "$SPLIT_PART_PREFIX" '
     [.[] | .body // "" | split("\n")[] | select(startswith($p)) | ltrimstr($p) | rtrimstr(" -->") |
-      (try fromjson catch null) | select(type == "object") | .parent | select(type == "number")] | first // empty') || return 1
+      (try fromjson catch null) | select(type == "object" and
+        (.parent | type == "number" and . > 0 and . == floor) and
+        (.index | type == "number" and . > 0 and . == floor) and
+        (.total | type == "number" and . >= 2 and . <= 8 and . == floor) and .index <= .total)] |
+      first // empty') || return 1
+  parent=$(jq -r .parent <<<"$part") || return 1
   [[ "$parent" =~ ^[1-9][0-9]*$ ]] || return 1
-  split_recorded "$(split_comments "$parent")" | jq -e --argjson c "$child" 'to_entries | any(.value == $c)' >/dev/null || return 1
+  comments=$(split_comments "$parent") || return 1
+  split_recorded "$comments" | jq -e --argjson c "$child" --arg i "$(jq -r .index <<<"$part")" '.[$i] == $c' >/dev/null || return 1
   pjson=$(gh issue view "$parent" --repo "$REPO_SLUG" --json state,author,labels) || return 1
   jq -e --argjson creators "$LOOP_MANUAL_ISSUE_CREATORS" --argjson required "$LOOP_REQUIRED_LABELS" '
     .state == "OPEN" and .author.is_bot == false and
     ((.author.login // "") | ascii_downcase) as $a | ($creators | map(ascii_downcase) | index($a)) != null and
     ($required | length > 0) and ([.labels[].name] as $n | all($required[]; . as $r | $n | index($r)))' <<<"$pjson" >/dev/null || return 1
-  manual_approval_authorized "$parent"
+  approvals=$(manual_approval_evidence "$parent") || return 1
+  jq -cn --argjson part "$part" --argjson parent "$pjson" --argjson approvals "$approvals" '
+    {parent:$part.parent,index:$part.index,total:$part.total,creator:$parent.author,
+     requiredLabelEvents:$approvals}'
+}
+
+split_child_manual() {
+  split_child_evidence "$1" >/dev/null
 }
 
 # Main-loop hook: new split requests, then progress of running splits.

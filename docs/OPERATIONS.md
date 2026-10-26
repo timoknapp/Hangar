@@ -505,6 +505,9 @@ Creation is recorded on the parent per part, so an interrupted split resumes wit
 Parts are manual intake like their parent: they bypass unattended WIP (`maxActiveIssues`) and the daily attempt budget.
 This applies only while the part carries this publisher's part marker, the parent records it, and the parent is open, created by a user in `manualIssueCreators` and still has every `requiredLabels` label set by such a user; otherwise the part falls back to the unattended rules.
 Repository-specific queues (backlog files, dispatchers) are not edited.
+Before each model phase, publisher metadata includes `splitApproval` for a verified manual split child: the parent number, part index/total, human creator and current required-label approval events.
+The child's bot creator and copied bot-applied labels remain visible; inherited approval is explicit rather than inferred from those bot events.
+Missing or revoked parent approval blocks the run and clears the prior evidence snapshot; this does not widen the child scope or relax review gates.
 
 ### Spec work type (`squad:spec`)
 
