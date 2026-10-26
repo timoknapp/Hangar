@@ -144,7 +144,46 @@ db '.issues["7"].author={login:"stranger",is_bot:false}'
 ! split_child_manual 101 || fail 'part of a non-allowlisted parent accepted'
 db '.issues["7"].author={login:"Owner",is_bot:false}'
 split_child_manual 101 || fail 'restored parent not accepted'
+original_comments=$(jq -c '.issues["101"].comments' "$DB")
+for marker in '{"parent":7,"index":2,"total":3}' '{"parent":7,"index":1.5,"total":3}' '{"parent":7,"index":1,"total":99}'; do
+  db --arg b "${SPLIT_PART_PREFIX}${marker} -->" '.issues["101"].comments[0].body=$b'
+  ! split_child_manual 101 || fail 'malformed/misbound part marker accepted'
+done
+db --argjson c "$original_comments" '.issues["101"].comments=$c'
 ok 'parts are manual intake only with own markers and a live, human-approved, allowlisted parent'
+
+# Real metadata path: bot-authored child must carry the parent's human approval,
+# not just admissionClass=manual plus the bot's child-label event.
+(
+  CURRENT_ISSUE=101 CURRENT_MANUAL_INTAKE=true
+  TASK_BASE_SHA=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+  CURRENT_CLAIM_REF=refs/heads/squad-claims/issue-101
+  CURRENT_CLAIM_OID=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+  db '.refs["refs/heads/squad-claims/issue-101"]="bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb" |
+      .issues["101"].body="Part 1/3 of #7." | .issues["101"].labels += ["squad:processing"]'
+  label_event 101 labeled implementation-approved worker[bot] Bot
+  eval "$(declare -f gh | sed '1s/^gh /split_fixture_gh /')"
+  gh() {
+    if [[ "$1 $2" == 'issue view' ]]; then
+      jq -c --arg n "$3" '.issues[$n] | . + {number:($n|tonumber),url:("https://github.com/example/repo/issues/"+$n),labels:(.labels|map({name:.}))}' "$DB"
+    elif [[ "$1" == api && "$2" == *'/events?'* ]]; then
+      jq -c --arg n "$(sed -E 's#.*/issues/([0-9]+)/.*#\1#' <<<"$2")" '.issues[$n].events' "$DB"
+    else split_fixture_gh "$@"; fi
+  }
+  git() { [[ "$1" == ls-tree ]] && return 0; command git "$@"; }
+  CURRENT_APPROVAL_ISSUE_JSON=$(gh issue view 101)
+  ISSUE_CONTRACT_HASH=$(issue_contract_hash "$CURRENT_APPROVAL_ISSUE_JSON")
+  refresh_issue_evidence || fail 'split evidence refresh rejected approved child'
+  jq -e '.creator.is_bot == true and .requiredLabelEvents[0].actor == "worker[bot]" and
+    .splitApproval.parent == 7 and .splitApproval.index == 1 and .splitApproval.total == 3 and
+    .splitApproval.creator.login == "Owner" and .splitApproval.requiredLabelEvents[0].actor == "Owner"' \
+    <<<"$CURRENT_ISSUE_EVIDENCE" >/dev/null || fail 'model sees bot label but no inherited human approval'
+  [[ "$(issue_evidence_context)" == *'splitApproval'* ]] || fail 'context omits split approval explanation'
+  label_event 7 unlabeled implementation-approved Owner User
+  if refresh_issue_evidence; then fail 'revoked split approval still delivered'; fi
+  [[ -z "$CURRENT_ISSUE_EVIDENCE" ]] || fail 'stale split evidence after revocation'
+)
+ok 'actual issue/critic metadata includes verified split-parent human approval and clears on revocation'
 
 # --- ordered release; parent closes after the last part ---
 process_splits; if has 102 squad; then fail 'part 2 released while part 1 open'; fi
