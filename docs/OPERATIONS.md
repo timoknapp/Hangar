@@ -19,6 +19,7 @@
 11. [Debugging worker sessions](#11-debugging-worker-sessions)
 12. [Monitoring and alerting](#12-monitoring-and-alerting)
 13. [Quality policy and recovery](#13-quality-policy-and-recovery)
+14. [Pipeline scenarios](#14-pipeline-scenarios)
 
 ---
 
@@ -840,3 +841,250 @@ Copilot validates literal shell paths before a compound command runs. Prefer sho
 ### Critic recovery from truncated reads
 
 The exact-delivery validator gives no credit to an entire view result containing truncation, elision or non-numbered guidance. A reviewer must therefore re-read the full originally requested range in smaller clean subranges, not only the missing tail after the last visible numbered line. All instructions use at most 50-line initial reads and explicit whole-range retry semantics. An incomplete result remains terminal; after correcting a demonstrated delivery defect, operator recovery must use a fresh independent review of the unchanged verified source and body rather than accept the previous verdict.
+
+---
+
+## 14. Pipeline scenarios
+
+The diagrams below cover the straight-line journey, the complete worker cycle and each
+operational branch. They are collapsed by default.
+
+### Issue → PR flight pipeline
+
+```mermaid
+sequenceDiagram
+    participant Board  as "Issue board"
+    participant Worker as "Worker process"
+    participant Impl   as "Copilot session (squad-agent)"
+    participant Critic as "Independent critic (optional)"
+    participant Verify as "Verify hook (optional)"
+    participant GH     as "GitHub"
+
+    Worker->>Board: poll for unclaimed tasks
+    Board-->>Worker: issue found
+    Worker->>Board: atomically create claim ref, then add squad:processing
+    Worker->>Impl: run implementation session (local workspace only)
+    Impl-->>Worker: local commits / residual edits
+    opt verify enabled
+        Worker->>Verify: run test suite or custom script
+        Verify-->>Worker: pass / fail to bounded correction
+    end
+    opt critic enabled after verification
+        Worker->>Critic: fresh read-only review of attested diff input
+        Critic-->>Worker: APPROVE / REQUEST_CHANGES + validated findings / unavailable
+        Note over Worker,Critic: Critic-driven fixes are fully re-verified
+    end
+    Worker->>GH: publisher pushes branch and creates draft PR
+    Worker->>GH: Recheck head, body, approval and required checks before Ready
+    Note over GH: Human reviews and merges
+```
+
+### Master cycle
+
+```mermaid
+flowchart TD
+    Wake([Production-path canary]) --> Pending{Pending publication?}
+    Pending -->|yes| Checks[Read exact-head checks and approval]
+    Pending -->|no| Admission[One admission point: approval, claim, WIP, attempt budget]
+    Admission --> Base[Fresh clean pinned base and baseline verification]
+    Base -->|pass| Implement[One implementer]
+    Base -->|failure| Blocked[Blocked; retain work; consume revision]
+    Implement --> Verify[Verify exact head]
+    Verify -->|code regression and shared budget left| Fix[Minimal correction plus new summary]
+    Fix --> Verify
+    Verify -->|infra, policy or exhausted| Blocked
+    Verify -->|pass| Review[Full pinned diff and actual body review]
+    Review -->|request changes and shared budget left| Fix
+    Review -->|incomplete or unavailable| Blocked
+    Review -->|approve| Draft[Lease-push and create draft; save receipt]
+    Draft --> Checks
+    Checks -->|pending within deadline| Pending
+    Checks -->|failed, revoked or drift| Blocked
+    Checks -->|all current evidence valid| Ready[Ready for human review; no merge]
+    Ready --> Done[squad:done; release issue claim; keep WIP until close]
+
+```
+
+<details>
+<summary><b>Scenario A — Happy path: queued issue to ready PR</b></summary>
+
+```mermaid
+sequenceDiagram
+    participant Worker as "Hangar worker"
+    participant GitHub as "GitHub"
+    participant Impl as "Squad implementer"
+    participant Verify as "Verify gate"
+    participant Critic as "Independent critic"
+
+    Worker->>GitHub: Poll and find issue 42 with squad label
+    Worker->>GitHub: Create atomic claim ref
+    Worker->>GitHub: Add squad:processing
+    Worker->>Impl: Implement issue 42 locally
+    Impl-->>Worker: Local commits and residual edits
+    Worker->>Verify: Run build and tests
+    Verify-->>Worker: PASS
+    Worker->>Critic: Review attested diff against rubric
+    Critic-->>Worker: APPROVE
+    Worker->>GitHub: Push branch and open draft PR
+    Worker->>GitHub: Verify exact-head remote checks and unchanged approval
+    Worker->>GitHub: Promote to Ready with readback
+    Worker->>GitHub: Add squad:done and release claim ref
+    Note over GitHub: A human reviews and merges
+```
+
+</details>
+
+<details>
+<summary><b>Scenario B — Empty board: generate the next task</b></summary>
+
+```mermaid
+sequenceDiagram
+    participant Worker as "Hangar worker"
+    participant GitHub as "GitHub"
+    participant Planner as "Read-only planner"
+
+    Worker->>GitHub: Poll revision and squad queues
+    GitHub-->>Worker: No eligible issue
+    Note over Worker: Autonomous mode is enabled<br/>Budget and auto-issue capacity remain
+    Worker->>Planner: Read goal source and repository context
+    Planner-->>Worker: Return one highest-value scoped task
+    Worker->>GitHub: File issue with squad and loop:auto
+    Note over Worker: A later cycle handles it through Scenario A
+```
+
+</details>
+
+<details>
+<summary><b>Scenario C — Verification fails: bounded self-correction</b></summary>
+
+```mermaid
+sequenceDiagram
+    participant Worker as "Hangar worker"
+    participant Impl as "Squad implementer"
+    participant Verify as "Verify gate"
+
+    Worker->>Impl: Implement requested change
+    Impl-->>Worker: Local commits
+    Worker->>Verify: Run complete build and test command
+    Verify-->>Worker: FAIL with bounded log tail
+    Worker->>Impl: Correct from verification feedback
+    Impl-->>Worker: Fix commits
+    Worker->>Verify: Re-run complete build and test command
+    Verify-->>Worker: PASS
+    Note over Worker: Continue to independent critic before publication
+```
+
+</details>
+
+<details>
+<summary><b>Scenario D — Critic requests changes: revise, re-verify, re-review</b></summary>
+
+```mermaid
+sequenceDiagram
+    participant Worker as "Hangar worker"
+    participant Impl as "Squad implementer"
+    participant Verify as "Verify gate"
+    participant Critic as "Independent critic"
+
+    Worker->>Critic: Review attested diff against rubric
+    Critic-->>Worker: REQUEST_CHANGES with structured BLOCK findings
+    Worker->>Impl: Apply cumulative open findings (untrusted data)
+    Impl-->>Worker: Revised commits
+    Worker->>Verify: Re-run complete build and tests
+    Verify-->>Worker: PASS
+    Worker->>Critic: Review the new attested diff
+    Critic-->>Worker: APPROVE
+    Note over Worker: Only the re-verified revision can become a ready PR
+```
+
+</details>
+
+<details>
+<summary><b>Scenario E — Verification unavailable: block without code correction</b></summary>
+
+```mermaid
+sequenceDiagram
+    participant Worker as "Hangar worker"
+    participant Impl as "Squad implementer"
+    participant Verify as "Verify discovery"
+    participant GitHub as "GitHub"
+
+    Worker->>Impl: Implement requested change
+    Impl-->>Worker: Local commits
+    Worker->>Verify: Resolve automatic build and test command
+    Verify-->>Worker: No supported command detected
+    Worker->>GitHub: Mark squad:failed, consume revision trigger
+    Note over Worker: Retain local work and redacted evidence; no publication
+    Note over GitHub: Human review is required before merge
+```
+
+</details>
+
+<details>
+<summary><b>Scenario F — Autonomous budget exhausted: manual work remains eligible</b></summary>
+
+```mermaid
+sequenceDiagram
+    participant Worker as "Hangar worker"
+    participant GitHub as "GitHub"
+
+    Worker->>GitHub: Check revision queue, then manual squad issues
+    GitHub-->>Worker: Generated issue found after manual and revision queues are empty
+    Worker->>GitHub: Read autonomous budget refs
+    GitHub-->>Worker: Daily autonomous cap reached
+    Worker-->>Worker: Idle autonomous work until the next poll interval
+    Note over Worker,GitHub: Budget applies to configured unattended labels, including revisions
+```
+
+</details>
+
+<details>
+<summary><b>Scenario G — Human requests a revision on an existing PR</b></summary>
+
+```mermaid
+sequenceDiagram
+    participant Human as "Human reviewer"
+    participant GitHub as "GitHub"
+    participant Worker as "Hangar worker"
+    participant Impl as "Squad implementer"
+    participant Gates as "Verify and critic gates"
+
+    Human->>GitHub: Comment on issue and add squad:revision
+    Worker->>GitHub: Atomically claim the issue
+    Worker->>GitHub: Fetch existing PR branch and failed checks
+    Worker->>Impl: Apply only the requested revision
+    Impl-->>Worker: Revision commits
+    Worker->>Gates: Verify and independently review revision
+    alt Gates pass
+      Gates-->>Worker: Locally verified and reviewed
+      Worker->>GitHub: Convert PR to draft before any lease-push
+      Worker->>GitHub: Update branch and save exact-head receipt
+      Worker->>GitHub: Check current-head remote evidence before Ready
+    else Gates remain unresolved
+      Gates-->>Worker: Blocked
+      Worker->>GitHub: Mark failed and consume revision trigger
+      Note over Worker: Retain local work; do not push failed revision
+    end
+
+```
+
+</details>
+
+<details>
+<summary><b>Scenario H — Critic unavailable: stop without code correction</b></summary>
+
+```mermaid
+sequenceDiagram
+    participant Worker as "Hangar worker"
+    participant Critic as "Independent critic"
+    participant GitHub as "GitHub"
+
+    Worker->>Critic: Submit read-only review file with nonce
+    Critic-->>Worker: Timeout, malformed output, or missing attestation
+    Worker->>GitHub: Mark squad:failed and consume revision trigger
+    Note over Worker: Retain full input binding and redacted logs; explicit retry only
+    Note over GitHub: No missing verdict is inferred as approval
+
+```
+
+</details>

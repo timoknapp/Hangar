@@ -4,7 +4,35 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
-## [Unreleased] — v0.1.0
+## [Unreleased] — v0.2.0 "Software Factory"
+
+Hangar becomes a staged software factory with governed autonomy, following [ADR 0001](docs/adr/0001-factory-direction.md).
+Approval and merge stay human.
+
+### Added
+
+- Attempt receipts in every issue and `tools/factory-metrics.py` for the share of approved
+  issues that reached Ready without intervention (#35).
+- Pre-claim preflight, one delayed automatic retry for transient infrastructure failures,
+  checkpoint resume and a reaper for orphaned claims (#36, #38).
+- Critic reviews of large changes split into fully proven parts; CLI-masked review input becomes
+  a warned draft instead of a failure (#39, #41).
+- Decision stops: an implementer that stops for a missing decision asks in the issue
+  (`squad:needs-decision`); a reply re-queues it (#45).
+- Opt-in read-only triage (`loop.triage`) with `implement`, `needs-info`, `needs-spec`,
+  `too-large` and `park` outcomes (#46).
+- Split on request: `squad:split-approved` turns a triage split proposal into ordered child
+  issues (#50, #51, #52).
+- Spec work type: `squad:spec` writes a path-guarded spec under `loop.specDir` (#53).
+- Opt-in learning loop (`loop.learning`): weekly draft PR limited to the repository's review and
+  triage rubrics (#54).
+
+### Changed
+
+- README describes the factory stages and the GitHub labels that drive them; pipeline scenario
+  diagrams moved to `docs/OPERATIONS.md`.
+
+## Initial extraction baseline (source-only)
 
 Initial extraction baseline. Hangar is published as source-only; no prebuilt
 container images are distributed at this time.

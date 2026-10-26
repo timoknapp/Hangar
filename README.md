@@ -1,14 +1,14 @@
 <div align="center">
   <img src="docs/assets/hangar-mark.svg" width="120" height="120" alt="Hangar mark — a friendly copilot robot ready to launch" />
-  <h1>Hangar</h1>
-  <p><strong>Where your copilots live, get fueled up, and launch.</strong></p>
-  <p><em>The self-hosted flight deck for coding agents.</em></p>
+  <h1>Hangar — Software Factory</h1>
+  <p><strong>The self-hosted software factory for GitHub Copilot coding agents.</strong></p>
+  <p><em>Governed autonomy: approved issues in, reviewed pull requests out.</em></p>
   <p>Your hardware. Your repositories. Your merge button.</p>
 
   <p>
     <img alt="CI: GitHub Actions" src="https://img.shields.io/badge/CI-GitHub_Actions-2088FF?logo=githubactions&amp;logoColor=white" />
     <img alt="License: MIT" src="https://img.shields.io/badge/license-MIT-blue.svg" />
-    <img alt="Status: v0.1 source-only" src="https://img.shields.io/badge/status-v0.1_source--only-orange.svg" />
+    <img alt="Status: v0.2 source-only" src="https://img.shields.io/badge/status-v0.2_source--only-orange.svg" />
     <img alt="Platform: Docker / Linux" src="https://img.shields.io/badge/platform-Docker%20%7C%20Linux-informational.svg" />
   </p>
 </div>
@@ -24,14 +24,109 @@
 
 ## What is Hangar?
 
-Hangar is an open-source, self-hosted control plane that runs a fleet of GitHub Copilot coding
-agents — called **Squad Workers** — on your own hardware. Workers poll a GitHub issue board, claim
-tasks atomically, run a full Copilot implementation session, and open a pull request. You review
-and merge; Hangar never touches the merge button.
+Hangar is an open-source, self-hosted **software factory**: it runs a fleet of GitHub Copilot coding agents — called **Squad Workers** — on your own hardware and turns approved GitHub issues into pull requests under rules you control.
+The guarded pipeline verifies changes with your own tests, gets an independent critic review, and opens a draft; Ready additionally requires your configured checks to pass on that exact commit.
+Opt-in triage can ask questions or propose a split before implementation; spec tasks produce a specification instead of code.
+You review and merge; Hangar never touches the merge button.
+Self-hosted means the workers and orchestration, not model inference: requests still go to GitHub Copilot.
+
+**Governed autonomy** means agents work unattended within human-defined approval, scope and publication rules.
+Unclear work comes back as a question in the issue instead of a guess, and a deterministic publisher — not the model — validates agent artifacts before mutating GitHub.
 
 It is not affiliated with or endorsed by GitHub, Inc. GitHub Copilot is a separate subscription
 service with its own [terms](https://docs.github.com/en/site-policy/github-terms/github-terms-for-additional-products-and-features).
 Hangar is an independent wrapper and coordination layer that calls the Copilot CLI on your behalf.
+
+---
+
+## 🏭 How the factory works
+
+```mermaid
+flowchart LR
+    I["Approved issue<br/>squad + your approval labels"] --> T{"Triage<br/>opt-in, read-only"}
+    T -->|"needs-info / needs-spec"| Q["Question in the issue<br/>your reply re-queues"]
+    Q --> T
+    T -->|too-large| S["Split proposal<br/>you approve, parts run in order"]
+    S --> I
+    T -->|implement| B["Build<br/>code, or a spec for squad:spec"]
+    I -->|"triage off, or squad:spec"| B
+    T -->|park| P["Parked<br/>human decides whether to resume"]
+    B -->|"missing decision"| Q
+    B --> V["Verify<br/>your test suite"]
+    V --> C["Independent critic<br/>fresh session, repository rubric"]
+    C --> D["Draft pull request"]
+    D --> R["Ready<br/>after required checks pass"]
+    R --> M(["You merge"])
+    M -.-> L["Learning loop, opt-in<br/>weekly rubric proposal PR"]
+```
+
+| Stage | What happens | Details |
+| --- | --- | --- |
+| **Triage** (opt-in) | A read-only session decides whether the issue can be built as written in one PR: `implement`, `needs-info`, `needs-spec`, `too-large` (with a split proposal) or `park`. It can only hold work back, never approve it. | [Triage](docs/OPERATIONS.md#triage-looptriage-opt-in) |
+| **Questions** | When triage or the implementer finds a missing decision, the worker asks in the issue (`squad:needs-*`) instead of guessing. Your reply re-queues the issue and is passed on as a decision. | [Decision stops](docs/OPERATIONS.md#decision-stops-squadneeds-decision) |
+| **Split on request** | For a `too-large` issue, `squad:split-approved` turns the stored proposal into ordered child issues; each part runs after the previous one closes. | [Split](docs/OPERATIONS.md#split-on-request-squadsplit-approved) |
+| **Spec work type** | `squad:spec` makes the same pipeline write a spec instead of code, path-guarded to `loop.specDir`. Merging the spec approves the implementation. | [Spec](docs/OPERATIONS.md#spec-work-type-squadspec) |
+| **Verify and critic** | Your tests run on the exact head; a second, independent session reviews the full diff against a rubric. Code failures get bounded corrections; infrastructure failures block. | [Quality policy](docs/OPERATIONS.md#13-quality-policy-and-recovery) |
+| **Draft → Ready** | Every PR starts as a draft and becomes Ready only when the configured `requiredChecks` are green on that exact commit. | [Configuration](#reposjson-fields) |
+| **Receipts and metrics** | Every attempt leaves a hidden receipt in the issue; `tools/factory-metrics.py` computes the share of approved issues that reached Ready without intervention, from GitHub alone. | [Metrics](docs/OPERATIONS.md#attempt-receipts-and-reliability-metrics) |
+| **Learning loop** (opt-in) | Repeated human corrections become a weekly draft PR that may only change `.loop/review-rubric.md` and `.loop/triage.md`. | [Learning loop](docs/OPERATIONS.md#learning-loop-looplearning-opt-in) |
+
+Triage and learning are opt-in; spec tasks skip triage.
+Ready requires enabled verification and critic plus an explicit required-check policy; otherwise a PR stays draft.
+The learning loop proposes changes for human review, never applies them automatically; [ADR 0001](docs/adr/0001-factory-direction.md) gates enabling it on the reliability metric staying above 60 %.
+
+### What you do on GitHub
+
+You run the factory with labels and replies; there is no separate UI.
+
+| You | Hangar |
+| --- | --- |
+| Add `squad` (plus your `requiredLabels`) to an issue | Queues it; the next free worker claims it atomically |
+| Reply in an issue labelled `squad:needs-info`, `squad:needs-spec` or `squad:needs-decision` | Re-queues it; your answer reaches triage, implementer and critic as a decision |
+| Add `squad:split-approved` to a `squad:too-large` issue | Creates the proposed parts as ordered child issues and closes the parent after the last one |
+| Add `scope:large-approved` (`triageOverrideLabel`) and reply | Lets oversized work through triage |
+| Add `squad:spec` | Writes a spec instead of code |
+| Remove `squad:park` and add `squad` | Builds parked work after all |
+| Add `squad:revision` with the requested changes | Revises the existing PR, ahead of new work |
+| Merge the PR | Closes the issue (spec PRs only reference it) and releases the next split part |
+
+Status labels you will see: `squad:processing`, `squad:review-pending` (draft waiting for checks),
+`squad:done`, `squad:failed`.
+Split approval must come from a user in `manualIssueCreators`; replies count from the issue author or those users.
+The size override does not grant approval or bypass other gates.
+
+---
+
+## Why Hangar?
+
+Choose Hangar when you want an inspectable, GitHub-issue-driven **software factory** around the Copilot CLI: several workers processing approved work under your own deterministic gates.
+Other platforms also support automation and parallel agents; self-hosting alone is not unique to Hangar.
+
+| | Hangar | GitHub Copilot cloud agent | OpenHands | Devin |
+| --- | --- | --- | --- | --- |
+| Where the agent runs | Your Docker host | GitHub Actions runner (GitHub-hosted by default, self-hosted possible) | Self-hosted or OpenHands Cloud | Cognition's cloud; VPC deployment on Enterprise |
+| Source | MIT | Proprietary | Open-source core | Proprietary |
+| Model access and billing | Requires a Copilot subscription; plan limits and usage charges apply | Copilot plan and usage policy | Bring a supported LLM provider | Plan allowance; additional usage may cost extra |
+
+What Hangar adds on top of a single agent run:
+
+- **Several workers, one queue** — atomic claims, WIP limits and attempt budgets per repository.
+- **Stages with deterministic gates** — triage, decision stops, split, spec, verify and critic;
+  the model proposes, a publisher with fixed rules decides what reaches GitHub.
+- **An independent critic** — a fresh session, optionally on a different model, with a full-input
+  delivery proof; a missing verdict is never treated as approval.
+- **Credential isolation** — the agent never holds a repository-authorized token.
+- **Measured autonomy** — receipts and a metric for issues that reached Ready without intervention.
+
+Hangar builds on the Copilot CLI and does not replace it.
+This is a deployment comparison, not a benchmark or a claim that other products lack governance controls.
+Comparison checked on 2026-10-26 against vendor documentation: [Copilot cloud agent][copilot-cloud], [Copilot runners][copilot-runners], [OpenHands][openhands] and [Devin][devin-pricing].
+Corrections are welcome.
+
+[copilot-cloud]: https://docs.github.com/en/copilot/concepts/copilot-surfaces/copilot-on-github
+[copilot-runners]: https://docs.github.com/en/copilot/how-tos/administer-copilot/manage-for-organization/configure-runner-for-coding-agent
+[openhands]: https://github.com/OpenHands/OpenHands
+[devin-pricing]: https://devin.ai/pricing
 
 ---
 
@@ -60,6 +155,8 @@ The operational layer that keeps quality high and blast radius small:
 | **Verify hook** | Runs your own test suite or a custom script before publication; code failures allow bounded correction; infrastructure/policy failures block without code repair |
 | **Autonomous budget / draft safety** | `maxPrsPerDay` caps configured unattended attempts, including revisions; WIP1 is optional |
 | **Credential isolation** | OS permissions protect publisher credentials; a native guard protects the model-token process tree and strips secrets from child tools |
+| **Preflight and retry** | An unhealthy worker claims nothing; eligible transient infrastructure failures get one delayed automatic retry, resuming from a valid checkpoint when available |
+| **Fail closed** | Unreadable state, malformed agent output or missing evidence blocks with a reason; it never counts as success |
 
 ---
 
@@ -79,7 +176,7 @@ The operational layer that keeps quality high and blast radius small:
 
 ### 1. Clone and copy the example files
 
-> **Source-only release:** Hangar v0.1 has no npm package. Do **not** run unscoped
+> **Source-only release:** Hangar v0.2 has no npm package. Do **not** run unscoped
 > `npx hangar`; that package name belongs to an unrelated project.
 
 ```bash
@@ -232,250 +329,9 @@ flowchart TD
     style MERGE fill:#166534,color:#fff
 ```
 
-### Issue → PR flight pipeline
-
-```mermaid
-sequenceDiagram
-    participant Board  as "Issue board"
-    participant Worker as "Worker process"
-    participant Impl   as "Copilot session (squad-agent)"
-    participant Critic as "Independent critic (optional)"
-    participant Verify as "Verify hook (optional)"
-    participant GH     as "GitHub"
-
-    Worker->>Board: poll for unclaimed tasks
-    Board-->>Worker: issue found
-    Worker->>Board: atomically create claim ref, then add squad:processing
-    Worker->>Impl: run implementation session (local workspace only)
-    Impl-->>Worker: local commits / residual edits
-    opt verify enabled
-        Worker->>Verify: run test suite or custom script
-        Verify-->>Worker: pass / fail to bounded correction
-    end
-    opt critic enabled after verification
-        Worker->>Critic: fresh read-only review of attested diff input
-        Critic-->>Worker: APPROVE / REQUEST_CHANGES + validated findings / unavailable
-        Note over Worker,Critic: Critic-driven fixes are fully re-verified
-    end
-    Worker->>GH: publisher pushes branch and creates draft PR
-    Worker->>GH: Recheck head, body, approval and required checks before Ready
-    Note over GH: Human reviews and merges
-```
-
-## 🛫 How it operates — every scenario
-
-The summary above is the straight-line journey. The diagrams below cover the complete worker
-cycle and each operational branch. They are collapsed by default to keep the README scannable.
-
-### Master cycle
-
-```mermaid
-flowchart TD
-    Wake([Production-path canary]) --> Pending{Pending publication?}
-    Pending -->|yes| Checks[Read exact-head checks and approval]
-    Pending -->|no| Admission[One admission point: approval, claim, WIP, attempt budget]
-    Admission --> Base[Fresh clean pinned base and baseline verification]
-    Base -->|pass| Implement[One implementer]
-    Base -->|failure| Blocked[Blocked; retain work; consume revision]
-    Implement --> Verify[Verify exact head]
-    Verify -->|code regression and shared budget left| Fix[Minimal correction plus new summary]
-    Fix --> Verify
-    Verify -->|infra, policy or exhausted| Blocked
-    Verify -->|pass| Review[Full pinned diff and actual body review]
-    Review -->|request changes and shared budget left| Fix
-    Review -->|incomplete or unavailable| Blocked
-    Review -->|approve| Draft[Lease-push and create draft; save receipt]
-    Draft --> Checks
-    Checks -->|pending within deadline| Pending
-    Checks -->|failed, revoked or drift| Blocked
-    Checks -->|all current evidence valid| Ready[Ready for human review; no merge]
-    Ready --> Done[squad:done; release issue claim; keep WIP until close]
-
-```
-
-<details>
-<summary><b>Scenario A — Happy path: queued issue to ready PR</b></summary>
-
-```mermaid
-sequenceDiagram
-    participant Worker as "Hangar worker"
-    participant GitHub as "GitHub"
-    participant Impl as "Squad implementer"
-    participant Verify as "Verify gate"
-    participant Critic as "Independent critic"
-
-    Worker->>GitHub: Poll and find issue 42 with squad label
-    Worker->>GitHub: Create atomic claim ref
-    Worker->>GitHub: Add squad:processing
-    Worker->>Impl: Implement issue 42 locally
-    Impl-->>Worker: Local commits and residual edits
-    Worker->>Verify: Run build and tests
-    Verify-->>Worker: PASS
-    Worker->>Critic: Review attested diff against rubric
-    Critic-->>Worker: APPROVE
-    Worker->>GitHub: Push branch and open draft PR
-    Worker->>GitHub: Verify exact-head remote checks and unchanged approval
-    Worker->>GitHub: Promote to Ready with readback
-    Worker->>GitHub: Add squad:done and release claim ref
-    Note over GitHub: A human reviews and merges
-```
-
-</details>
-
-<details>
-<summary><b>Scenario B — Empty board: generate the next task</b></summary>
-
-```mermaid
-sequenceDiagram
-    participant Worker as "Hangar worker"
-    participant GitHub as "GitHub"
-    participant Planner as "Read-only planner"
-
-    Worker->>GitHub: Poll revision and squad queues
-    GitHub-->>Worker: No eligible issue
-    Note over Worker: Autonomous mode is enabled<br/>Budget and auto-issue capacity remain
-    Worker->>Planner: Read goal source and repository context
-    Planner-->>Worker: Return one highest-value scoped task
-    Worker->>GitHub: File issue with squad and loop:auto
-    Note over Worker: A later cycle handles it through Scenario A
-```
-
-</details>
-
-<details>
-<summary><b>Scenario C — Verification fails: bounded self-correction</b></summary>
-
-```mermaid
-sequenceDiagram
-    participant Worker as "Hangar worker"
-    participant Impl as "Squad implementer"
-    participant Verify as "Verify gate"
-
-    Worker->>Impl: Implement requested change
-    Impl-->>Worker: Local commits
-    Worker->>Verify: Run complete build and test command
-    Verify-->>Worker: FAIL with bounded log tail
-    Worker->>Impl: Correct from verification feedback
-    Impl-->>Worker: Fix commits
-    Worker->>Verify: Re-run complete build and test command
-    Verify-->>Worker: PASS
-    Note over Worker: Continue to independent critic before publication
-```
-
-</details>
-
-<details>
-<summary><b>Scenario D — Critic requests changes: revise, re-verify, re-review</b></summary>
-
-```mermaid
-sequenceDiagram
-    participant Worker as "Hangar worker"
-    participant Impl as "Squad implementer"
-    participant Verify as "Verify gate"
-    participant Critic as "Independent critic"
-
-    Worker->>Critic: Review attested diff against rubric
-    Critic-->>Worker: REQUEST_CHANGES with structured BLOCK findings
-    Worker->>Impl: Apply cumulative open findings (untrusted data)
-    Impl-->>Worker: Revised commits
-    Worker->>Verify: Re-run complete build and tests
-    Verify-->>Worker: PASS
-    Worker->>Critic: Review the new attested diff
-    Critic-->>Worker: APPROVE
-    Note over Worker: Only the re-verified revision can become a ready PR
-```
-
-</details>
-
-<details>
-<summary><b>Scenario E — Verification unavailable: block without code correction</b></summary>
-
-```mermaid
-sequenceDiagram
-    participant Worker as "Hangar worker"
-    participant Impl as "Squad implementer"
-    participant Verify as "Verify discovery"
-    participant GitHub as "GitHub"
-
-    Worker->>Impl: Implement requested change
-    Impl-->>Worker: Local commits
-    Worker->>Verify: Resolve automatic build and test command
-    Verify-->>Worker: No supported command detected
-    Worker->>GitHub: Mark squad:failed, consume revision trigger
-    Note over Worker: Retain local work and redacted evidence; no publication
-    Note over GitHub: Human review is required before merge
-```
-
-</details>
-
-<details>
-<summary><b>Scenario F — Autonomous budget exhausted: manual work remains eligible</b></summary>
-
-```mermaid
-sequenceDiagram
-    participant Worker as "Hangar worker"
-    participant GitHub as "GitHub"
-
-    Worker->>GitHub: Check revision queue, then manual squad issues
-    GitHub-->>Worker: Generated issue found after manual and revision queues are empty
-    Worker->>GitHub: Read autonomous budget refs
-    GitHub-->>Worker: Daily autonomous cap reached
-    Worker-->>Worker: Idle autonomous work until the next poll interval
-    Note over Worker,GitHub: Budget applies to configured unattended labels, including revisions
-```
-
-</details>
-
-<details>
-<summary><b>Scenario G — Human requests a revision on an existing PR</b></summary>
-
-```mermaid
-sequenceDiagram
-    participant Human as "Human reviewer"
-    participant GitHub as "GitHub"
-    participant Worker as "Hangar worker"
-    participant Impl as "Squad implementer"
-    participant Gates as "Verify and critic gates"
-
-    Human->>GitHub: Comment on issue and add squad:revision
-    Worker->>GitHub: Atomically claim the issue
-    Worker->>GitHub: Fetch existing PR branch and failed checks
-    Worker->>Impl: Apply only the requested revision
-    Impl-->>Worker: Revision commits
-    Worker->>Gates: Verify and independently review revision
-    alt Gates pass
-      Gates-->>Worker: Locally verified and reviewed
-      Worker->>GitHub: Convert PR to draft before any lease-push
-      Worker->>GitHub: Update branch and save exact-head receipt
-      Worker->>GitHub: Check current-head remote evidence before Ready
-    else Gates remain unresolved
-      Gates-->>Worker: Blocked
-      Worker->>GitHub: Mark failed and consume revision trigger
-      Note over Worker: Retain local work; do not push failed revision
-    end
-
-```
-
-</details>
-
-<details>
-<summary><b>Scenario H — Critic unavailable: stop without code correction</b></summary>
-
-```mermaid
-sequenceDiagram
-    participant Worker as "Hangar worker"
-    participant Critic as "Independent critic"
-    participant GitHub as "GitHub"
-
-    Worker->>Critic: Submit read-only review file with nonce
-    Critic-->>Worker: Timeout, malformed output, or missing attestation
-    Worker->>GitHub: Mark squad:failed and consume revision trigger
-    Note over Worker: Retain full input binding and redacted logs; explicit retry only
-    Note over GitHub: No missing verdict is inferred as approval
-
-```
-
-</details>
+The step-by-step flight pipeline, the master cycle and every operational scenario (verification
+failure, critic requests changes, revisions, budget exhaustion, …) are diagrammed in
+[docs/OPERATIONS.md → Pipeline scenarios](docs/OPERATIONS.md#14-pipeline-scenarios).
 
 ---
 
@@ -500,7 +356,7 @@ sequenceDiagram
 | `loop.goalFile` | `"auto"` | Goal source for autonomous planning; discovers `.loop/GOAL.md`, `BACKLOG.md`, or `.squad/GOAL.md` |
 | `loop.workScope` | `"all"` | `"all"` \| `"green-fit"` (only deterministic, well-scoped autonomous tasks) |
 | `loop.criticRubric` | `"auto"` | `"auto"` \| `"repo-aware"` \| repository-relative rubric path |
-| `loop.implementer` | `"plain"` | `"plain"` (restricted) \| `"squad"` (full Squad coordinator; v0.1 recommended path) |
+| `loop.implementer` | `"plain"` | `"plain"` (restricted) \| `"squad"` (full Squad coordinator; recommended path) |
 | `loop.requiredLabels` | `[]` | Additional approval labels checked at admission, publication and Ready |
 | `loop.manualIssueCreators` | `[]` | Human creator login allowlist for priority intake outside WIP/daily caps; requires nonempty explicit `requiredLabels` |
 | `loop.unattendedLabels` | `["loop:auto"]` | Work labels subject to the attempt budget, including revisions |
@@ -576,7 +432,7 @@ threat model.
 
 ---
 
-## Current limitations (v0.1)
+## Current limitations (v0.2)
 
 - **Source-only** — no prebuilt Docker image, no published npm package, no CLI installer.
   Build from source with `./deploy.sh up`.
@@ -596,7 +452,8 @@ threat model.
 | --- | --- |
 | [docs/INSTALL.md](docs/INSTALL.md) | Full installation guide — prerequisites, GitHub App setup, first worker |
 | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | System design, trust boundaries, threat model, component map |
-| [docs/OPERATIONS.md](docs/OPERATIONS.md) | Day-to-day ops: logs, scaling, credential rotation, debugging |
+| [docs/OPERATIONS.md](docs/OPERATIONS.md) | Day-to-day ops: factory stages, logs, scaling, credential rotation, debugging, pipeline scenarios |
+| [docs/adr/0001-factory-direction.md](docs/adr/0001-factory-direction.md) | Why the factory is staged this way and how its success is measured |
 
 ---
 
