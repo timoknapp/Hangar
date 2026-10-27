@@ -228,6 +228,14 @@ argument, tests fresh revocation and repository-forged context, and preserves le
 profiles using only the first two arguments. `issue-evidence.test.sh` checks the
 publisher-owned `admissionClass` and stale-class rejection without weakening pinned
 queue-row restrictions.
+Referenced GitHub items may be issues or pull requests: the publisher preserves a merged PR's
+`MERGED` state rather than treating it as missing issue metadata or rewriting it to `CLOSED`.
+The issue-evidence fixtures cover this case and still reject unknown states, mismatched numbers,
+revoked approval and lost claims.
+The triage prompt explicitly binds `size.files` to primary implementation files under the pinned
+repository's companion-file policy, while total-file estimates stay in the rationale and all changed
+lines remain in `size.lines`; this clarification does not relax the configured size gates.
+
 These local regression fixtures do not establish live worker/GitHub API acceptance. Deployment and live acceptance remain separate.
 
 ### Trusted profile path access

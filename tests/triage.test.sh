@@ -87,6 +87,9 @@ run_agent_copilot() {
   printf '%s\n' "$*" >>"$TMP/model-args"
   [[ " $* " == *' --deny-tool=write '* && " $* " == *' --deny-tool=shell '* ]] || fail 'triage session not read-only'
   [[ " $* " == *' --output-format json '* ]] || fail 'triage must use the JSON event transport'
+  [[ "$*" == *'size.files MUST count PRIMARY implementation files, not total files'* &&
+     "$*" == *"pinned repository's companion-file exclusions"* &&
+     "$*" == *'size.lines still includes all changed lines'* ]] || fail 'primary/total estimate contract is ambiguous'
   events "$MODEL_OUT"; return "$MODEL_RC"
 }
 claim_owned() { return 0; }
