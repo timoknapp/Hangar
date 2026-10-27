@@ -1791,7 +1791,12 @@ refresh_issue_evidence() {
   while IFS= read -r n; do
     [[ -z "$n" ]] && continue
     item=$(gh issue view "$n" --repo "$REPO_SLUG" --json number,state,title,url) || return 1
-    jq -e --argjson n "$n" '.number == $n and (.state == "OPEN" or .state == "CLOSED")' <<<"$item" >/dev/null || return 1
+    # gh issue view resolves both issues and pull requests; a merged PR has
+    # state MERGED, not CLOSED. Preserve that observed fact for the model.
+    jq -e --argjson n "$n" '.number == $n and (.state | IN("OPEN","CLOSED","MERGED"))' <<<"$item" >/dev/null || {
+      log_error "Referenced item #${n} has invalid or mismatched GitHub metadata"
+      return 1
+    }
     related=$(jq -cn --argjson list "$related" --argjson item "$item" '$list + [$item]') || return 1
   done <<<"$refs"
   # Recheck after supplementary API reads so a concurrent revocation is not lost.

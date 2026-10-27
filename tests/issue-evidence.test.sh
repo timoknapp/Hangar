@@ -33,7 +33,12 @@ gh() {
     esac
   elif [[ "${1:-} ${2:-} ${3:-}" == 'issue view 335' ]]; then
     [[ "$MODE" != dependency-fail ]] || return 42
-    echo '{"number":335,"state":"CLOSED","title":"Retention design","url":"https://github.com/example/repo/issues/335"}'
+    case "$MODE" in
+      merged-reference) echo '{"number":335,"state":"MERGED","title":"Merged prerequisite","url":"https://github.com/example/repo/pull/335"}';;
+      invalid-reference-state) echo '{"number":335,"state":"UNKNOWN","title":"Unverified prerequisite"}';;
+      mismatched-reference) echo '{"number":337,"state":"CLOSED","title":"Wrong prerequisite"}';;
+      *) echo '{"number":335,"state":"CLOSED","title":"Retention design","url":"https://github.com/example/repo/issues/335"}';;
+    esac
   elif [[ "$1 $2" == 'issue comment' ]]; then
     return 0
   elif [[ "$*" == *'--json author --jq .author.login'* ]]; then
@@ -58,7 +63,11 @@ refresh_issue_evidence
 jq -e '.number==336 and .state=="OPEN" and (.labels|index("implementation-approved")) != null and .requiredLabelEvents[0].actor=="owner" and .referencedIssues[0].number==335 and .referencedIssues[0].state=="CLOSED" and (.pinnedBacklogRow|contains("design-first"))' <<<"$CURRENT_ISSUE_EVIDENCE" >/dev/null
 [[ "$(issue_evidence_context)" == *'do not re-query private GitHub'* ]]
 ok 'live label, actor, pinned queue and prerequisite delivered without GitHub credentials'
-for MODE in missing revoked forged scope closed api-fail claim provenance truncated dependency-fail git-fail; do
+MODE=merged-reference
+if ! refresh_issue_evidence; then fail 'merged pull request reference wrongly rejected before implementation'; fi
+jq -e '.referencedIssues[0].number==335 and .referencedIssues[0].state=="MERGED" and (.referencedIssues[0].url|endswith("/pull/335"))' <<<"$CURRENT_ISSUE_EVIDENCE" >/dev/null
+ok 'merged pull request reference accepted with exact publisher-observed state, not rewritten as an issue closure'
+for MODE in missing revoked forged scope closed api-fail claim provenance truncated dependency-fail invalid-reference-state mismatched-reference git-fail; do
   reject refresh_issue_evidence
   [[ -z "$CURRENT_ISSUE_EVIDENCE" ]] || fail 'stale evidence retained after rejection'
   ok "$MODE rejected; prior evidence cleared"
