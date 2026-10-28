@@ -757,6 +757,11 @@ The fixed interface is:
 
 ### Summary and screenshot handoff
 
+The publisher supplies the single canonical current-issue closing link; closing keywords inside the implementer summary stay neutralized to avoid closing unrelated issues.
+An issue's conditional completion guard (for example, "do not close until checks pass" or "do not close without the required guard") is not a permanent ban on closure.
+It retains the canonical link, which only takes effect when the reviewed PR is merged; all publication, verification and review gates still apply.
+An unconditional no-close request, a discussion issue, or a spec-only task remains reference-only.
+
 The implementer writes untracked `.squad/pr-summary.md` with exactly `Problem`, `Root Cause`, `Solution`, `Testing`, `Future Work` H2 headings.
 Corrections regenerate the cumulative summary; the publisher removes scratch before committing/verifying.
 The critic reviews the actual final body alongside the complete base-pinned diff and active trusted rules.

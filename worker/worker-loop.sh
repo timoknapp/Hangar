@@ -1234,6 +1234,22 @@ neutralize_closing_references() {
   sed -E 's/([Cc]lose[sd]?|[Ff]ix(e[sd])?|[Rr]esolve[sd]?)([[:space:]]*):?[[:space:]]+#/\1 issue #/g'
 }
 
+# A completion prerequisite ("do not close until/without ...") is not a
+# permanent no-close request. It does not bypass publication/review gates:
+# a canonical link only closes the issue when the reviewed PR is merged.
+issue_requests_reference_only() {
+  awk 'BEGIN {RS="[.!?;\n]"}
+    {
+      clause=tolower($0)
+      if (clause ~ /discussion/) found=1
+      if (match(clause, /(do not|must not|never|no)[ -]*(auto[ -]*)?clos(e|ing)/)) {
+        tail=substr(clause, RSTART+RLENGTH)
+        if (tail !~ /(^|[^[:alnum:]_])(until|unless|without|before)([^[:alnum:]_]|$)/) found=1
+      }
+    }
+    END {exit !found}'
+}
+
 build_pr_body() {
   local issue_num="$1"
   local issue_title="$2"
@@ -1268,7 +1284,7 @@ ${issue_context}"
   issue_reference="Closes #${issue_num}."
   # A spec never closes its issue: merging it approves the later implementation.
   [[ "$TASK_SPEC" != true ]] || issue_reference="Refs #${issue_num} (spec; merging approves implementation)."
-  if grep -Eqi '(do not|must not|never|no)[ -]*(auto[ -]*)?clos(e|ing)|discussion' <<<"$issue_body"; then
+  if issue_requests_reference_only <<<"$issue_body"; then
     issue_reference="Refs #${issue_num}."
   fi
   cat <<EOF

@@ -340,6 +340,36 @@ assert_not_contains "$pr_body" "See issue" "PR body is standalone"
 assert_contains "$change_summary" "1 commit(s) on this branch" "change summary reports bounded commit count"
 assert_not_contains "$change_summary" "- change" "change summary omits raw commit subjects"
 
+# A completion prerequisite is not a permanent ban on automatic issue closure.
+# The publisher owns the canonical link; agent-written links remain neutralized.
+PR_EXECUTIVE_SUMMARY=$'## Problem\nFixture\n\n## Root Cause\nFixture\n\n## Solution\nCloses #42. Fixes #9.\n\n## Testing\nFixture\n\n## Future Work\nNone.'
+for conditional in \
+  'Do not close this issue as delivered without this guard.' \
+  'Never close until the required checks pass.' \
+  'Must not close this issue unless the dependency is updated.' \
+  'No auto-closing before review.'; do
+  conditional_body=$(build_pr_body 42 "Synthetic feature" "$conditional" "$change_summary")
+  assert_contains "$conditional_body" $'\nCloses #42.\n' "conditional completion guard retains canonical closing link"
+  assert_eq "1" "$(printf '%s\n' "$conditional_body" | grep -Ec '^Closes #42\.$')" "exactly one publisher-owned closing line"
+  assert_not_contains "$conditional_body" 'Fixes #9' "agent sibling closing line remains neutralized"
+done
+for permanent in \
+  'Never close this issue.' \
+  'Do not auto-close this issue.' \
+  'No auto-closing.' \
+  'Before review, never close this issue.' \
+  'Never close this issue; before publishing, run the tests.' \
+  'This is a discussion issue.' \
+  'Never close this issue. Do not close until checks pass.' \
+  'Do not close without the guard; never close this issue.'; do
+  permanent_body=$(build_pr_body 42 "Synthetic feature" "$permanent" "$change_summary")
+  assert_contains "$permanent_body" $'\nRefs #42.\n' "permanent no-close or discussion remains reference-only"
+  assert_not_contains "$permanent_body" $'\nCloses #42.\n' "no closing link for permanent prohibition"
+done
+spec_body=$(TASK_SPEC=true build_pr_body 42 "Synthetic spec" 'Do not close until checks pass.' "$change_summary")
+assert_not_contains "$spec_body" $'\nCloses #42.\n' "spec still never closes its issue"
+pass "conditional completion guards differ from permanent no-close; one publisher closing link, specs remain reference-only"
+
 PR_EXECUTIVE_SUMMARY=""
 fallback_body=$(build_pr_body 42 "Synthetic feature" "Acceptance criteria are explicit." "$change_summary")
 assert_contains "$fallback_body" "Synthetic feature is the approved work request" "fallback names requested work"
