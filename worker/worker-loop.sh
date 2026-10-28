@@ -3144,7 +3144,11 @@ resolve_verify_cmd() {
       publication_authorized "$CURRENT_ISSUE" squad squad:processing || return 1
     fi
     head=$(git rev-parse HEAD) || return 1
-    printf 'bash %q %q %q %q %q\n' "${LOOP_PROFILE_DIR}/verify.sh" "$TASK_BASE_SHA" "$head" "$admission_class" "$CURRENT_REVIEW_ORIGIN"
+    if [[ -e "$LOOP_PROFILE_DIR/review-origin.sh" || -L "$LOOP_PROFILE_DIR/review-origin.sh" ]]; then
+      printf 'bash %q %q %q %q %q\n' "${LOOP_PROFILE_DIR}/verify.sh" "$TASK_BASE_SHA" "$head" "$admission_class" "$CURRENT_REVIEW_ORIGIN"
+    else
+      printf 'bash %q %q %q %q\n' "${LOOP_PROFILE_DIR}/verify.sh" "$TASK_BASE_SHA" "$head" "$admission_class"
+    fi
     return 0
   fi
   local v="${LOOP_VERIFY:-off}"

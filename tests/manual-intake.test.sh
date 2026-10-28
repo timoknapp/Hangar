@@ -394,12 +394,12 @@ ok 'manual receipt survives restart, promotes and finalizes through exact-head/c
   TASK_BASE_SHA="$BASE" LOOP_PROFILE_DIR="$TMP/profile"
   read_profile_file() { return 0; }
   cmd=$(resolve_verify_cmd)
-  [[ "$cmd" == "bash $TMP/profile/verify.sh $BASE $BASE manual null" ]] || fail 'profile command missing trusted manual class'
+  [[ "$cmd" == "bash $TMP/profile/verify.sh $BASE $BASE manual" ]] || fail 'profile command missing trusted manual class'
   jq '.[0].actor.type="Bot"' "$TMP/good-events" >"$TMP/approval-events"
   reject resolve_verify_cmd
   cp "$TMP/good-events" "$TMP/approval-events"
   CURRENT_MANUAL_INTAKE=false
-  [[ "$(resolve_verify_cmd)" == "bash $TMP/profile/verify.sh $BASE $BASE unattended null" ]] || fail 'legacy profile command gained manual class'
+  [[ "$(resolve_verify_cmd)" == "bash $TMP/profile/verify.sh $BASE $BASE unattended" ]] || fail 'legacy profile command gained manual class'
   CURRENT_MANUAL_INTAKE=invalid
   reject resolve_verify_cmd
   release_issue_claim
