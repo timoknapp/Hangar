@@ -755,6 +755,28 @@ The fixed interface is:
   Helpers inside the profile execute as coding code too, never as publisher.
   Exit 78 means policy/evidence blocked; any applicable UI check must fail closed when real reviewer evidence is absent.
 
+### Operator-verified scheduled review origins
+
+An instance may install a read-only, root-owned `review-origin.sh` beside its existing verifier.
+This OPTIONAL publisher-side hook receives the freshly fetched issue JSON on stdin (including its publisher-bound number).
+It may inspect GitHub provenance using publisher access; it must never execute repository-supplied code or commands.
+The hook returns `null` for ordinary work or a bounded JSON object with `kind: scheduled-review`, `issue`,
+`contractHash`, `date`, `draftOnly: true` and `allowedPaths` after verifying the operator-approved workflow origin.
+The operator owns the hook and all adjacent helpers/policy; repository files, bot labels or a claimed run ID are not authority.
+Failure, contract mismatch or revoked origin blocks admission/publication rather than granting an exception.
+
+The publisher rechecks this evidence before verification and publication, supplies it as a separate fourth
+argument to `verify.sh BASE HEAD ADMISSION REVIEW_ORIGIN_JSON`, and includes it in model/reviewer metadata.
+It does not change `ADMISSION` to manual or grant a general queue exemption.
+The instance verifier must enforce the exact report-only immutable diff and unchanged queue/approvals;
+without such a verifier, origin evidence alone does not enforce a project-specific path policy.
+A positive origin pins the task/pending receipt to draft-only, preserving all ordinary verification/review gates.
+Profiles that ignore the optional fourth argument retain their existing restrictions; instances without
+this hook keep their original behavior. Never enable the hook without its matching scoped verifier.
+
+Policy failures during baseline verification now retain policy classification in the public receipt and
+have no automatic infrastructure retry; ordinary code and launcher failures keep their separate classes.
+
 ### Summary and screenshot handoff
 
 The publisher supplies the single canonical current-issue closing link; closing keywords inside the implementer summary stay neutralized to avoid closing unrelated issues.

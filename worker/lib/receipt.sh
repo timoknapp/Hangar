@@ -29,6 +29,7 @@ receipt_class() {
   case "$1" in
     "No changes produced"*|"Revision produced no changes"*|"The implementer stopped without changes"*) echo decision ;;
     "Independent review: open BLOCK findings"*) echo review ;;
+    "Baseline checks failed"*) echo code ;;
     "Verification failed; correction budget exhausted"*) echo code ;;
     "Operator policy blocked"*|"Publication canceled"*|"Issue contract changed"*|\
     "Remote branch already exists"*|"Revision branch was never published"*|"Spec scope:"*|"No explicit required-check policy"*|\
