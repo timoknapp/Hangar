@@ -1,4 +1,5 @@
-# shellcheck shell=bash
+# shellcheck shell=bash disable=SC2034
+# TASK_KEEP_DRAFT is consumed by the sourcing worker's publication lifecycle.
 # Optional OPERATOR-owned provenance verifier, never a repository-selected hook.
 # Supplies nonsecret evidence to the unprivileged instance verifier (fourth arg).
 CURRENT_REVIEW_ORIGIN=null
