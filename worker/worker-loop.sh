@@ -54,6 +54,8 @@ source "${HANGAR_LIB_DIR}/split.sh"
 source "${HANGAR_LIB_DIR}/spec.sh"
 # shellcheck source=worker/lib/learning.sh
 source "${HANGAR_LIB_DIR}/learning.sh"
+# shellcheck source=worker/lib/review-origin.sh
+source "${HANGAR_LIB_DIR}/review-origin.sh"
 
 # Trusted object interpretation never honors replacements or cached ancestry.
 # Ignore hooks and reset helpers before using the publisher-only credential helper.
@@ -1771,6 +1773,10 @@ publication_authorized() {
     PUBLICATION_BLOCK_REASON="atomic issue claim ownership changed or is unverifiable"
     return 1
   fi
+  if ! refresh_review_origin "$issue_json"; then
+    PUBLICATION_BLOCK_REASON="Operator policy blocked review provenance; origin unavailable, edited or revoked"
+    return 1
+  fi
   CURRENT_APPROVAL_ISSUE_JSON="$issue_json"
   return 0
 }
@@ -1829,11 +1835,11 @@ refresh_issue_evidence() {
   fi
   CURRENT_ISSUE_EVIDENCE=$(jq -cn --arg repo "$REPO_SLUG" --argjson number "$CURRENT_ISSUE" \
     --arg base "$TASK_BASE_SHA" --arg contract "$ISSUE_CONTRACT_HASH" --arg at "$(date -u +%FT%TZ)" \
-    --arg admissionClass "$admission_class" --argjson splitApproval "$split" \
+    --arg admissionClass "$admission_class" --argjson splitApproval "$split" --argjson reviewOrigin "$CURRENT_REVIEW_ORIGIN" \
     --argjson issue "$issue" --argjson approvals "$approvals" --arg row "$row" --argjson related "$related" '
     {creator:$issue.author,repository:$repo,number:$number,url:("https://github.com/"+$repo+"/issues/"+($number|tostring)),
      checkedAt:$at,base:$base,contractHash:$contract,state:$issue.state,admissionClass:$admissionClass,
-     labels:[$issue.labels[].name],requiredLabelEvents:$approvals,splitApproval:$splitApproval,
+     labels:[$issue.labels[].name],requiredLabelEvents:$approvals,splitApproval:$splitApproval,reviewOrigin:$reviewOrigin,
      pinnedBacklogRow:$row,referencedIssues:$related}') || return 1
   (( ${#CURRENT_ISSUE_EVIDENCE} <= 32768 )) || { CURRENT_ISSUE_EVIDENCE=""; return 1; }
 }
@@ -2063,7 +2069,7 @@ process_issue() {
     TASK_STAGE=verify
     if ! git checkout --no-overwrite-ignore --detach "$TASK_BASE_SHA" || ! verify_clean_baseline ||
        ! git checkout --no-overwrite-ignore "$TASK_BRANCH" || ! task_integrity; then
-      cleanup_issue "$issue_num" "$TASK_BRANCH" "Baseline verification or launcher failed; no implementation attempted"
+      cleanup_issue "$issue_num" "$TASK_BRANCH" "$(baseline_block_reason)"
       return 1
     fi
     finish_issue "$issue_num" "$issue_title" "$TASK_BRANCH"
@@ -2082,7 +2088,7 @@ process_issue() {
     return 1
   fi
   if ! verify_clean_baseline; then
-    cleanup_issue "$issue_num" "$branch_name" "Baseline verification or launcher failed; no implementation attempted"
+    cleanup_issue "$issue_num" "$branch_name" "$(baseline_block_reason)"
     return 1
   fi
   [[ "$TASK_SPEC" == true ]] || run_triage "$issue_num" "$issue_json" || return 1
@@ -2393,7 +2399,7 @@ process_revision() {
   # Baseline is the pinned fresh base, never the possibly failing revision.
   if ! git checkout --no-overwrite-ignore --detach "$TASK_BASE_SHA" || ! verify_clean_baseline ||
      ! git checkout --no-overwrite-ignore "$branch_name" || ! task_integrity; then
-    cleanup_issue "$issue_num" "$branch_name" "Revision baseline verification failed; workspace retained"
+    cleanup_issue "$issue_num" "$branch_name" "$(baseline_block_reason); workspace retained"
     return 1
   fi
   if ! reset_task_scratch; then
@@ -3138,7 +3144,7 @@ resolve_verify_cmd() {
       publication_authorized "$CURRENT_ISSUE" squad squad:processing || return 1
     fi
     head=$(git rev-parse HEAD) || return 1
-    printf 'bash %q %q %q %q\n' "${LOOP_PROFILE_DIR}/verify.sh" "$TASK_BASE_SHA" "$head" "$admission_class"
+    printf 'bash %q %q %q %q %q\n' "${LOOP_PROFILE_DIR}/verify.sh" "$TASK_BASE_SHA" "$head" "$admission_class" "$CURRENT_REVIEW_ORIGIN"
     return 0
   fi
   local v="${LOOP_VERIFY:-off}"
@@ -3181,6 +3187,13 @@ run_verify_gate() {
   before=$(git rev-parse --verify HEAD) || return 4
   check_repository_evidence tracked "$before" || return 4
   if [[ "${LOOP_VERIFY:-off}" == off && -z "$LOOP_PROFILE_DIR" ]]; then VERIFY_FAILURE_KIND=""; return 3; fi
+  if [[ -n "$LOOP_PROFILE_DIR" && ( -e "$LOOP_PROFILE_DIR/review-origin.sh" || -L "$LOOP_PROFILE_DIR/review-origin.sh" ) ]]; then
+    if ! publication_authorized "$CURRENT_ISSUE" squad squad:processing; then
+      VERIFY_FAILURE_KIND=policy
+      VERIFY_LOG_TAIL="${PUBLICATION_BLOCK_REASON:-Operator policy blocked review provenance}"
+      return 5
+    fi
+  fi
   vcmd=$(resolve_verify_cmd) || { VERIFY_FAILURE_KIND=infrastructure; return 4; }
   [[ -n "$vcmd" ]] || return 2
   vlog=$(secure_temp_file "verify-${CURRENT_ISSUE:-x}") || return 4

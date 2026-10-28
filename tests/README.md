@@ -241,3 +241,11 @@ These local regression fixtures do not establish live worker/GitHub API acceptan
 ### Trusted profile path access
 
 `profile-access.test.sh` covers the exact metadata validator and real CLI-launch argument wiring with synthetic boundaries. `profile-access.container.sh` proves read/execute and write denial on a real root-owned read-only bind mount, without models/network/production volumes. Live inference acceptance separately checks that the actual CLI honors the narrow profile grant while denying unrelated paths; no blanket permissions are required.
+
+### Scheduled review provenance and baseline policy classification
+
+`review-origin.test.sh` exercises the optional operator-owned provenance adapter, exact issue/contract
+binding, revocation/failure clearing, separate verifier context and forced draft-only behavior.
+It also asserts that a baseline policy denial remains policy (no automatic retry), while code and
+infrastructure failures keep their own classes. Workflow-specific artifact/origin and immutable
+report-scope validation belong to the separately installed instance verifier and its tests.

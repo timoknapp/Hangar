@@ -57,6 +57,7 @@ for f in \
   remote-deploy.sh \
   tests/worker-loop.test.sh \
   tests/issue-evidence.test.sh \
+  tests/review-origin.test.sh \
   tests/quality-lifecycle.test.sh \
   tests/manual-intake.test.sh \
   tests/profile-access.test.sh \
@@ -123,6 +124,7 @@ bash tests/split.test.sh
 bash tests/spec.test.sh
 bash tests/learning.test.sh
 bash tests/issue-evidence.test.sh
+bash tests/review-origin.test.sh
 bash tests/quality-lifecycle.test.sh
 bash tests/manual-intake.test.sh
 bash tests/profile-access.test.sh
