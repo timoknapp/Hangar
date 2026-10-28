@@ -28,7 +28,7 @@ task_seconds_remaining() { echo 10; }
 refresh_review_origin "$ISSUE"
 [[ "$TASK_KEEP_DRAFT" == true ]]
 jq -e '.issue==7 and .kind=="scheduled-review"' <<<"$CURRENT_REVIEW_ORIGIN" >/dev/null
-for content in 'echo "{}"' 'echo "not json"' 'exit 78' 'echo "{\"kind\":\"scheduled-review\",\"issue\":8}"'; do
+for content in 'echo "{}"' 'echo "not json"' 'printf "null\\nnull\\n"' 'exit 78' 'echo "{\"kind\":\"scheduled-review\",\"issue\":8}"'; do
  printf '%s\n' "$content" >"$LOOP_PROFILE_DIR/review-origin.sh"
  if refresh_review_origin "$ISSUE" 2>/dev/null; then fail 'invalid or failed origin accepted'; fi
  [[ "$CURRENT_REVIEW_ORIGIN" == null ]] || fail 'stale origin retained'
