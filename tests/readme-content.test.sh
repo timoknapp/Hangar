@@ -95,3 +95,109 @@ check_mermaid "$README" 2
 check_mermaid "$OPERATIONS" 10
 
 echo "README content and diagram inventory: PASS (2 README + 10 OPERATIONS Mermaid diagrams)"
+
+# Offline subset: inline Markdown links into docs/ and ATX headings outside
+# fenced code blocks. Slugs retain Unicode letters/numbers, spaces, _ and -;
+# inline backticks and punctuation are removed, and duplicate slugs get -N.
+# This is deliberately not a complete GitHub Markdown parser (no HTML anchors,
+# reference links, Setext headings or escaped/nested link destinations).
+python3 - "$ROOT" <<'PYTHON'
+from pathlib import Path
+import re
+import sys
+import tempfile
+import unicodedata
+from urllib.parse import unquote, urlsplit
+
+
+def prose_lines(text):
+    fence = None
+    for line in text.splitlines():
+        match = re.match(r"^\s*(`{3,}|~{3,})(.*)$", line)
+        if match:
+            run, tail = match.groups()
+            if fence is None:
+                fence = run
+            elif run[0] == fence[0] and len(run) >= len(fence) and not tail.strip():
+                fence = None
+            continue
+        if fence is None:
+            yield line
+
+
+def heading_anchors(text):
+    anchors = set()
+    for line in prose_lines(text):
+        match = re.match(r"^ {0,3}#{1,6}\s+(.+?)\s*$", line)
+        if not match:
+            continue
+        heading = re.sub(r"\s+#+\s*$", "", match[1]).lower()
+        slug = "".join(
+            char for char in heading
+            if char in " _-" or unicodedata.category(char)[0] in "LNM"
+        ).replace(" ", "-")
+        anchor, suffix = slug, 0
+        while anchor in anchors:
+            suffix += 1
+            anchor = f"{slug}-{suffix}"
+        anchors.add(anchor)
+    return anchors
+
+
+def check_links(root, text):
+    errors = []
+    for line in prose_lines(text):
+        for destination in re.findall(r"\[[^\]\n]*\]\(([^\s)]+)\)", line):
+            url = urlsplit(destination)
+            # Never fetch external URLs, even ones containing docs/.
+            if url.scheme or url.netloc:
+                continue
+            path = unquote(url.path)
+            if not path.startswith(("docs/", "./docs/")):
+                continue
+            target = root / path
+            if not target.is_file():
+                errors.append(f"missing documentation file: {destination}")
+            elif url.fragment and unquote(url.fragment) not in heading_anchors(
+                target.read_text(encoding="utf-8")
+            ):
+                errors.append(f"missing documentation anchor: {destination}")
+    return errors
+
+
+# Synthetic fixtures prove failures without editing tracked documentation.
+with tempfile.TemporaryDirectory() as directory:
+    fixture = Path(directory)
+    (fixture / "docs").mkdir()
+    (fixture / "docs/example.md").write_text(
+        "## Decision stops (`squad:needs-decision`)\n"
+        "## Triage (`loop.triage`, opt-in)\n"
+        "## Repeated!\n## Repeated!\n"
+        "```sh\n# Not a heading\n```\n", encoding="utf-8"
+    )
+    good = (
+        "[decision](docs/example.md#decision-stops-squadneeds-decision)\n"
+        "[triage](./docs/example.md#triage-looptriage-opt-in)\n"
+        "[duplicate](docs/example.md#repeated-1)\n"
+        "[file](docs/example.md)\n"
+        "[external](https://example.invalid/docs/missing.md#missing)\n"
+        "[protocol-relative](//example.invalid/docs/missing.md)\n"
+        "```md\n[example](docs/missing.md)\n```\n"
+    )
+    if check_links(fixture, good):
+        raise SystemExit("FAIL: valid documentation-link fixtures were rejected")
+    for destination, expected in (
+        ("docs/missing.md", "file"),
+        ("docs/example.md#missing-anchor", "anchor"),
+        ("docs/example.md#not-a-heading", "anchor"),
+    ):
+        errors = check_links(fixture, f"[regression]({destination})")
+        if len(errors) != 1 or f"missing documentation {expected}:" not in errors[0]:
+            raise SystemExit(f"FAIL: regression fixture was not detected: {destination}")
+
+root = Path(sys.argv[1])
+errors = check_links(root, (root / "README.md").read_text(encoding="utf-8"))
+if errors:
+    raise SystemExit("\n".join(f"FAIL: {error}" for error in errors))
+print("README local documentation links and regression fixtures: PASS")
+PYTHON
